@@ -3,6 +3,7 @@ package com.nc.fotoro.sync
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.net.Uri
 import android.content.pm.ServiceInfo
 import android.os.Build
 import androidx.core.app.NotificationCompat
@@ -34,6 +35,8 @@ import org.json.JSONObject
 object SyncScheduler {
     const val MANUAL = "fotoro_manual_sync"
     const val AUTO = "fotoro_auto_sync"
+    const val SELECTED = "fotoro_selected_uploads"
+    const val SELECTED_TAG = "fotoro_selected_upload"
     private fun constraints(wifiOnly: Boolean) = Constraints.Builder()
         .setRequiredNetworkType(if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
         .setRequiresBatteryNotLow(true).build()
@@ -46,6 +49,13 @@ object SyncScheduler {
     fun syncNow(context: Context, wifiOnly: Boolean = false) {
         WorkManager.getInstance(context).enqueueUniqueWork(MANUAL, ExistingWorkPolicy.KEEP,
             OneTimeWorkRequestBuilder<SyncWorker>().setConstraints(constraints(wifiOnly)).build())
+    }
+    fun uploadSelected(context: Context, uri: Uri) {
+        val request = OneTimeWorkRequestBuilder<SelectedUploadWorker>()
+            .setInputData(workDataOf("uri" to uri.toString()))
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .addTag(SELECTED_TAG).build()
+        WorkManager.getInstance(context).enqueueUniqueWork(SELECTED, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
     }
 }
 

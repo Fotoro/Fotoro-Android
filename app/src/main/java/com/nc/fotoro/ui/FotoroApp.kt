@@ -94,7 +94,8 @@ import kotlinx.coroutines.flow.map
 import androidx.compose.runtime.snapshotFlow
 
 @Composable
-fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onMediaPermission: () -> Unit) {
+fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onMediaPermission: () -> Unit,
+              onPickFiles: () -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
     var splash by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) { delay(800); splash = false }
@@ -103,7 +104,7 @@ fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onMediaPermission
             splash || state.booting -> Splash()
             state.account == null || state.reauthRequired -> AuthScreen(state, onGoogleSignIn)
             state.server == null -> PairScreen(state, model::pair)
-            else -> Home(state, model, onMediaPermission)
+            else -> Home(state, model, onMediaPermission, onPickFiles)
         }
         state.error?.let { message ->
             Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(16.dp)
@@ -277,7 +278,8 @@ private enum class Tab { Overview, Library, Backup, Devices, More }
 private enum class MorePage { Menu, Storage, Processing, Settings }
 
 @Composable
-private fun Home(state: AppUiState, model: AppViewModel, onMediaPermission: () -> Unit) {
+private fun Home(state: AppUiState, model: AppViewModel, onMediaPermission: () -> Unit,
+                 onPickFiles: () -> Unit) {
     var tab by remember { mutableStateOf(Tab.Overview) }
     var morePage by remember { mutableStateOf(MorePage.Menu) }
     var selected by remember { mutableIntStateOf(-1) }
@@ -301,7 +303,7 @@ private fun Home(state: AppUiState, model: AppViewModel, onMediaPermission: () -
             Tab.Overview -> OverviewScreen(state, model, Modifier.padding(padding), openLibrary = { tab = Tab.Library })
             Tab.Library -> LibraryScreen(state, shown, model, Modifier.padding(padding),
                 onSelect = { selected = it }, onSelectRemote = { selectedRemote = it })
-            Tab.Backup -> BackupScreen(state, model, Modifier.padding(padding), onMediaPermission)
+            Tab.Backup -> BackupScreen(state, model, Modifier.padding(padding), onMediaPermission, onPickFiles)
             Tab.Devices -> Box(Modifier.padding(padding)) { DevicesScreen(state, model) }
             Tab.More -> Box(Modifier.padding(padding)) {
                 when (morePage) {
@@ -332,10 +334,10 @@ private fun Home(state: AppUiState, model: AppViewModel, onMediaPermission: () -
     }
     if (selected >= 0 && selected < shown.size) Viewer(shown, selected) { selected = -1 }
     if (selectedRemote >= 0 && selectedRemote < state.remoteMedia.size) {
-        RemoteViewer(state.remoteMedia, state.server?.deviceToken.orEmpty(), selectedRemote) { selectedRemote = -1 }
+        RemoteViewer(state.remoteMedia, state.server?.deviceToken.orEmpty(), selectedRemote, state, model) { selectedRemote = -1 }
     }
     state.searchedAsset?.let { asset ->
-        RemoteViewer(listOf(asset), state.server?.deviceToken.orEmpty(), 0, model::closeSearchHit)
+        RemoteViewer(listOf(asset), state.server?.deviceToken.orEmpty(), 0, state, model, model::closeSearchHit)
     }
 }
 
@@ -551,7 +553,8 @@ private fun RemoteImage(url: String, token: String, needsAuth: Boolean, name: St
 }
 
 @Composable
-private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modifier, onMediaPermission: () -> Unit) {
+private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modifier,
+                         onMediaPermission: () -> Unit, onPickFiles: () -> Unit) {
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(22.dp)) {
         BrandHeader()
         Spacer(Modifier.height(34.dp))
@@ -597,11 +600,17 @@ private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modif
                 progress = { if (state.syncTotal > 0) state.syncDone.toFloat() / state.syncTotal else 0f },
                 modifier = Modifier.fillMaxWidth(), color = Coral)
             Spacer(Modifier.height(8.dp))
-            Text("${state.syncDone} of ${state.syncTotal} uploaded in this run", color = Muted)
+            Text(if (state.selectedUploadActive) "${state.syncDone}% of this file transferred"
+                else "${state.syncDone} of ${state.syncTotal} uploaded in this run", color = Muted)
             Spacer(Modifier.height(22.dp))
         }
         PrimaryButton("Back up now", model::syncNow,
             !state.mediaGranted || state.syncState == WorkInfo.State.RUNNING)
+        Spacer(Modifier.height(12.dp))
+        PrimaryButton("Choose files to offload", onPickFiles)
+        Text("Select photos, videos, or documents. Each original transfers in the background and shows progress in notifications.",
+            color = Muted, style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(top = 10.dp))
         Spacer(Modifier.height(18.dp))
         Text(if (state.lastSync == 0L) "No backup check yet" else "Last checked ${DateUtils.getRelativeTimeSpanString(state.lastSync)}",
             color = Muted, style = MaterialTheme.typography.bodyMedium)
@@ -680,7 +689,8 @@ private fun ViewerControls(page: Int, total: Int, previous: () -> Unit, next: ()
 }
 
 @Composable
-private fun RemoteViewer(assets: List<ServerAsset>, deviceToken: String, initial: Int, close: () -> Unit) {
+private fun RemoteViewer(assets: List<ServerAsset>, deviceToken: String, initial: Int,
+                         state: AppUiState, model: AppViewModel, close: () -> Unit) {
     val pager = rememberPagerState(initialPage = initial, pageCount = { assets.size })
     val scope = rememberCoroutineScope()
     var zoomedPage by remember { mutableIntStateOf(-1) }
@@ -688,7 +698,9 @@ private fun RemoteViewer(assets: List<ServerAsset>, deviceToken: String, initial
         Box(Modifier.fillMaxSize().background(Ink)) {
             HorizontalPager(pager, modifier = Modifier.fillMaxSize(), userScrollEnabled = pager.currentPage != zoomedPage) { index ->
                 val asset = assets[index]
-                if (asset.isVideo) {
+                if (asset.isDocument) {
+                    DocumentPreview(asset, state, model)
+                } else if (asset.isVideo) {
                     androidx.compose.ui.viewinterop.AndroidView(factory = { context ->
                         VideoView(context).apply {
                             setVideoURI(Uri.parse(asset.contentUrl),
@@ -721,8 +733,24 @@ private fun RemoteViewer(assets: List<ServerAsset>, deviceToken: String, initial
                     modifier = Modifier.clickable(onClick = close).padding(end = 20.dp))
                 Column(Modifier.weight(1f)) {
                     Text(assets[pager.currentPage].name, color = Cream, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${pager.currentPage + 1} / ${assets.size} · On server", color = Muted, fontSize = 12.sp)
+                    val current = assets[pager.currentPage]
+                    Text("${pager.currentPage + 1} / ${assets.size} · ${readableBytes(current.fileSize)} · ${current.verifiedCopies} verified ${if (current.verifiedCopies == 1) "copy" else "copies"}",
+                        color = Muted, fontSize = 12.sp)
                 }
+            }
+            Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 60.dp)
+                .background(Ink.copy(alpha = .84f)).padding(horizontal = 18.dp, vertical = 4.dp)) {
+                val current = assets[pager.currentPage]
+                Text(if (current.safeToDelete) "Two verified server copies" else "Keep the local copy until backup completes",
+                    color = if (current.safeToDelete) Mint else Muted, fontSize = 12.sp)
+                if (state.originalVerificationId == current.id && state.originalVerified.isNotBlank()) {
+                    Text(state.originalVerified, color = if (state.originalVerified.startsWith("Original matches")) Mint else Coral,
+                        fontSize = 12.sp)
+                }
+                Text(if (state.verifyingOriginal && state.originalVerificationId == current.id) "Checking original…"
+                    else "Verify downloaded original ↻", color = Coral, fontSize = 12.sp,
+                    modifier = Modifier.clickable(enabled = !state.verifyingOriginal) { model.verifyOriginal(current) }
+                        .padding(vertical = 7.dp))
             }
             ViewerControls(pager.currentPage, assets.size,
                 previous = { scope.launch { pager.animateScrollToPage(pager.currentPage - 1) } },

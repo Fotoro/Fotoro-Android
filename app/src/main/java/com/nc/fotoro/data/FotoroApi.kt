@@ -2,8 +2,11 @@ package com.nc.fotoro.data
 
 import android.os.Build
 import android.net.Uri
+import android.content.Context
 import com.nc.fotoro.BuildConfig
 import java.io.IOException
+import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -157,6 +160,54 @@ class FotoroApi(private val store: SecureStore) {
 
     suspend fun pairingInvitation(): JSONObject =
         request("POST", "$website/api/pairing", JSONObject(), validAccountToken())
+
+    private fun mediaRequest(asset: ServerAsset): Request {
+        val server = store.server ?: throw ApiFailure(401, "Pair this phone first")
+        return Request.Builder().url(asset.contentUrl).apply {
+            if (asset.needsAuth) header("Authorization", "Bearer ${server.deviceToken}")
+        }.build()
+    }
+
+    /** Explicit full-original verification; streams bytes without holding them in memory. */
+    suspend fun verifyOriginal(asset: ServerAsset): Boolean = withContext(Dispatchers.IO) {
+        val digest = MessageDigest.getInstance("SHA-256")
+        client.newCall(mediaRequest(asset)).execute().use { response ->
+            if (!response.isSuccessful) throw ApiFailure(response.code, "Could not download original (${response.code})")
+            val stream = response.body?.byteStream() ?: throw IOException("Original is empty")
+            stream.use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+        }
+        digest.digest().joinToString("") { "%02x".format(it) }.equals(asset.id, ignoreCase = true)
+    }
+
+    /** Download a selected document to private cache for Android's native PDF reader or an external app. */
+    suspend fun downloadDocument(asset: ServerAsset, context: Context): File = withContext(Dispatchers.IO) {
+        val folder = File(context.cacheDir, "fotoro_documents").apply { mkdirs() }
+        val extension = asset.name.substringAfterLast('.', "bin").lowercase()
+            .takeIf { it.matches(Regex("[a-z0-9]{1,8}")) } ?: "bin"
+        val destination = File(folder, "${asset.id.filter { it.isLetterOrDigit() }}.$extension")
+        if (destination.exists() && destination.length() == asset.fileSize) return@withContext destination
+        val temporary = File(folder, "${destination.name}.part")
+        try {
+            client.newCall(mediaRequest(asset)).execute().use { response ->
+                if (!response.isSuccessful) throw ApiFailure(response.code, "Could not open document (${response.code})")
+                val input = response.body?.byteStream() ?: throw IOException("Document is empty")
+                input.use { source -> temporary.outputStream().use { target -> source.copyTo(target) } }
+            }
+            if (asset.fileSize > 0 && temporary.length() != asset.fileSize) throw IOException("Document download was incomplete")
+            if (!temporary.renameTo(destination)) throw IOException("Could not save document preview")
+            destination
+        } catch (error: Exception) {
+            temporary.delete()
+            throw error
+        }
+    }
 
     suspend fun testServer(): Boolean = try {
         val server = store.server ?: return false

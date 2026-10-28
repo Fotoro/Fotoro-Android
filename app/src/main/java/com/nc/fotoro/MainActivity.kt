@@ -5,6 +5,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.content.Intent
+import android.net.Uri
 import android.database.ContentObserver
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
@@ -41,6 +43,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
+            val selectedFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+                val readable = uris.filter { uri ->
+                    runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+                        .onFailure { model.reportError("Could not keep access to ${uri.lastPathSegment ?: "a selected file"}") }
+                        .isSuccess
+                }
+                model.uploadSelectedFiles(readable)
+            }
             val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
             val mediaPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
                 model.refreshMedia()
@@ -49,6 +59,7 @@ class MainActivity : ComponentActivity() {
             FotoroAndroidTheme {
                 FotoroApp(model,
                     onGoogleSignIn = ::signInWithGoogle,
+                    onPickFiles = { selectedFiles.launch(arrayOf("*/*")) },
                     onMediaPermission = {
                         val permissions = if (Build.VERSION.SDK_INT >= 34) arrayOf(
                             Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO,

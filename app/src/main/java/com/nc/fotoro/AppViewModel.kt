@@ -1,6 +1,8 @@
 package com.nc.fotoro
 
 import android.app.Application
+import android.net.Uri
+import java.io.File
 import androidx.lifecycle.AndroidViewModel
 import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
@@ -54,6 +56,7 @@ data class AppUiState(
     val syncDone: Int = 0,
     val syncTotal: Int = 0,
     val syncName: String = "",
+    val selectedUploadActive: Boolean = false,
     val backedUp: Int = 0,
     val primaryOnly: Int = 0,
     val lastSync: Long = 0,
@@ -71,6 +74,12 @@ data class AppUiState(
     val searchedAsset: ServerAsset? = null,
     val pairingPayload: String = "",
     val pairingExpiresAt: String = "",
+    val documentAssetId: String = "",
+    val documentFile: File? = null,
+    val documentLoading: Boolean = false,
+    val verifyingOriginal: Boolean = false,
+    val originalVerified: String = "",
+    val originalVerificationId: String = "",
     val error: String? = null,
 )
 
@@ -82,12 +91,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val workManager = WorkManager.getInstance(application)
     private val workLiveData = workManager.getWorkInfosForUniqueWorkLiveData(SyncScheduler.MANUAL)
     private val autoWorkLiveData = workManager.getWorkInfosForUniqueWorkLiveData(SyncScheduler.AUTO)
+    private val selectedWorkLiveData = workManager.getWorkInfosByTagLiveData(SyncScheduler.SELECTED_TAG)
     private val observer = androidx.lifecycle.Observer<List<WorkInfo>> {
-        val jobs = workLiveData.value.orEmpty() + autoWorkLiveData.value.orEmpty()
+        val jobs = workLiveData.value.orEmpty() + autoWorkLiveData.value.orEmpty() + selectedWorkLiveData.value.orEmpty()
         val job = jobs.firstOrNull { it.state == WorkInfo.State.RUNNING }
             ?: jobs.firstOrNull { it.state == WorkInfo.State.ENQUEUED }
             ?: jobs.lastOrNull()
         _state.update { it.copy(syncState = job?.state,
+            selectedUploadActive = job?.tags?.contains(SyncScheduler.SELECTED_TAG) == true,
             syncDone = job?.progress?.getInt("done", 0) ?: 0,
             syncTotal = job?.progress?.getInt("total", 0) ?: 0,
             syncName = job?.progress?.getString("name").orEmpty(),
@@ -100,6 +111,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     init {
         workLiveData.observeForever(observer)
         autoWorkLiveData.observeForever(observer)
+        selectedWorkLiveData.observeForever(observer)
         val auto = prefs.getBoolean("auto", true)
         val wifi = prefs.getBoolean("wifi_only", true)
         _state.update { it.copy(account = store.account, server = store.server,
@@ -243,6 +255,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearPairingInvitation() { _state.update { it.copy(pairingPayload = "", pairingExpiresAt = "") } }
 
+    fun loadDocument(asset: ServerAsset) = viewModelScope.launch {
+        if (state.value.documentAssetId == asset.id &&
+            (state.value.documentLoading || state.value.documentFile != null)) return@launch
+        _state.update { it.copy(documentAssetId = asset.id, documentFile = null, documentLoading = true) }
+        runCatching { api.downloadDocument(asset, getApplication()) }
+            .onSuccess { file -> _state.update { it.copy(documentFile = file, documentLoading = false) } }
+            .onFailure { error -> _state.update { it.copy(documentLoading = false,
+                error = error.message ?: "Could not open document") } }
+    }
+
+    fun verifyOriginal(asset: ServerAsset) = viewModelScope.launch {
+        _state.update { it.copy(verifyingOriginal = true, originalVerified = "", originalVerificationId = asset.id) }
+        runCatching { api.verifyOriginal(asset) }
+            .onSuccess { matches -> _state.update { it.copy(originalVerified = if (matches)
+                "Original matches the server checksum" else "Downloaded original does not match its checksum") } }
+            .onFailure { error -> _state.update { it.copy(error = error.message ?: "Could not verify original") } }
+        _state.update { it.copy(verifyingOriginal = false) }
+    }
+
     fun loadRemote(reset: Boolean = true) = viewModelScope.launch {
         val server = store.server ?: return@launch
         if (state.value.remoteLoading) return@launch
@@ -306,9 +337,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         SyncScheduler.syncNow(getApplication())
     }
 
+    fun uploadSelectedFiles(uris: List<Uri>) {
+        if (store.server == null) { reportError("Pair this phone to your server first"); return }
+        uris.forEach { SyncScheduler.uploadSelected(getApplication(), it) }
+    }
+
     fun signOut() {
         SyncScheduler.scheduleAuto(getApplication(), false)
         workManager.cancelUniqueWork(SyncScheduler.MANUAL)
+        workManager.cancelUniqueWork(SyncScheduler.SELECTED)
         store.clear()
         viewModelScope.launch {
             runCatching { CredentialManager.create(getApplication()).clearCredentialState(ClearCredentialStateRequest()) }
@@ -330,6 +367,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         workLiveData.removeObserver(observer)
         autoWorkLiveData.removeObserver(observer)
+        selectedWorkLiveData.removeObserver(observer)
         super.onCleared()
     }
 }

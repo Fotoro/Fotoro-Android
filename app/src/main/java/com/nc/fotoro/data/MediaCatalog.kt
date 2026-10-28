@@ -104,7 +104,19 @@ class MediaCatalog(private val context: Context) {
                              onChunk: suspend (Long, ByteArray, Int) -> Unit) = withContext(Dispatchers.IO) {
         context.contentResolver.openFileDescriptor(asset.uri, "r")?.use { descriptor ->
             java.io.FileInputStream(descriptor.fileDescriptor).use { stream ->
-                stream.channel.position(startOffset)
+                if (startOffset > 0) {
+                    try { stream.channel.position(startOffset) }
+                    catch (_: Exception) {
+                        // Some Storage Access Framework providers expose pipes rather than seekable files.
+                        var remaining = startOffset
+                        val discard = ByteArray(64 * 1024)
+                        while (remaining > 0) {
+                            val count = stream.read(discard, 0, minOf(remaining, discard.size.toLong()).toInt())
+                            if (count < 0) error("Media changed while resuming upload")
+                            remaining -= count
+                        }
+                    }
+                }
                 val buffer = ByteArray(4 * 1024 * 1024)
                 var offset = startOffset
                 while (offset < asset.size) {
