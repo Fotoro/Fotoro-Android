@@ -92,9 +92,12 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import androidx.compose.runtime.snapshotFlow
+import java.time.YearMonth
+import java.time.format.DateTimeFormatter
 
 @Composable
-fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onMediaPermission: () -> Unit,
+fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onBrowserSignIn: () -> Unit,
+              onMediaPermission: () -> Unit,
               onPickFiles: () -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
     var splash by remember { mutableStateOf(true) }
@@ -102,7 +105,7 @@ fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onMediaPermission
     Box(Modifier.fillMaxSize().background(Ink)) {
         when {
             splash || state.booting -> Splash()
-            state.account == null || state.reauthRequired -> AuthScreen(state, onGoogleSignIn)
+            state.account == null || state.reauthRequired -> AuthScreen(state, onGoogleSignIn, onBrowserSignIn)
             state.server == null -> PairScreen(state, model::pair)
             else -> Home(state, model, onMediaPermission, onPickFiles)
         }
@@ -177,7 +180,7 @@ private fun BrandHeader() {
 }
 
 @Composable
-private fun AuthScreen(state: AppUiState, signIn: () -> Unit) {
+private fun AuthScreen(state: AppUiState, signIn: () -> Unit, browserSignIn: () -> Unit) {
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(26.dp)) {
         BrandHeader()
         Spacer(Modifier.height(76.dp))
@@ -191,6 +194,11 @@ private fun AuthScreen(state: AppUiState, signIn: () -> Unit) {
             style = MaterialTheme.typography.bodyLarge)
         Spacer(Modifier.height(48.dp))
         PrimaryButton(if (state.reauthRequired) "Reconnect with Google" else "Continue with Google", signIn, state.busy)
+        Spacer(Modifier.height(10.dp))
+        Text(if (state.browserSignInPending) "Waiting for browser sign-in…"
+            else "Google sign-in not working? Continue in browser ↗", color = Coral,
+            modifier = Modifier.clickable(enabled = !state.busy && !state.browserSignInPending, onClick = browserSignIn)
+                .padding(vertical = 12.dp))
         Spacer(Modifier.height(18.dp))
         Text("New here? Your Fotoro account is created when you continue. Use the same Google account as your server.",
             color = Muted, style = MaterialTheme.typography.bodyMedium)
@@ -337,7 +345,7 @@ private fun Home(state: AppUiState, model: AppViewModel, onMediaPermission: () -
         RemoteViewer(state.remoteMedia, state.server?.deviceToken.orEmpty(), selectedRemote, state, model) { selectedRemote = -1 }
     }
     state.searchedAsset?.let { asset ->
-        RemoteViewer(listOf(asset), state.server?.deviceToken.orEmpty(), 0, state, model, model::closeSearchHit)
+        RemoteViewer(listOf(asset), state.searchToken, 0, state, model, model::closeSearchHit)
     }
 }
 
@@ -419,9 +427,15 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
     var searchText by remember { mutableStateOf("") }
     val gridState = rememberLazyGridState()
     val visible = when (filter) { "Photos" -> shown.filterNot { it.isVideo }; "Videos" -> shown.filter { it.isVideo }; else -> shown }
-    val remote = when (filter) { "Photos" -> state.remoteMedia.filter { !it.isVideo && !it.isDocument };
-        "Videos" -> state.remoteMedia.filter { it.isVideo }; "Docs" -> state.remoteMedia.filter { it.isDocument };
-        else -> state.remoteMedia }
+    val remote = remember(filter, state.remoteMedia) { when (filter) {
+        "Photos" -> state.remoteMedia.filter { !it.isVideo && !it.isDocument }
+        "Videos" -> state.remoteMedia.filter { it.isVideo }
+        "Docs" -> state.remoteMedia.filter { it.isDocument }
+        else -> state.remoteMedia
+    } }
+    val remoteMonths = remember(remote) { remote.groupBy { asset ->
+        asset.capturedAt.take(7).takeIf { it.length == 7 && it[4] == '-' } ?: "Unknown date"
+    } }
     LaunchedEffect(source, state.remoteTotal, state.remoteMedia.size, state.remoteLoading, state.searchQuery) {
         if (source == "On server" && state.searchQuery.isBlank() && !state.remoteLoading &&
             state.remoteMedia.size < state.remoteTotal) {
@@ -496,16 +510,23 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
                     RemoteImage(hit.thumbnailUrl, state.searchToken, true, hit.caption,
                         Modifier.fillMaxSize(), ContentScale.Crop)
                 }
-            } else items(remote, key = { it.id }) { asset ->
-                Box(Modifier.aspectRatio(1f).background(PanelRaised).clickable {
-                    onSelectRemote(state.remoteMedia.indexOf(asset))
-                }) {
-                    if (asset.isDocument && asset.thumbnailUrl.isBlank()) {
-                        Text("▤\n${asset.name}", color = Cream, maxLines = 3,
-                            modifier = Modifier.align(Alignment.Center).padding(8.dp))
-                    } else RemoteImage(asset.thumbnailUrl, state.server?.deviceToken.orEmpty(), asset.needsAuth,
-                        asset.name, Modifier.fillMaxSize(), ContentScale.Crop)
-                    if (asset.isVideo) VideoBadge()
+            } else remoteMonths.forEach { (month, assets) ->
+                item(key = "month:$month", span = { GridItemSpan(3) }) {
+                    Text(runCatching { YearMonth.parse(month).format(DateTimeFormatter.ofPattern("MMMM yyyy")) }
+                        .getOrDefault(month), color = Cream, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.fillMaxWidth().background(Ink).padding(horizontal = 18.dp, vertical = 12.dp))
+                }
+                items(assets, key = { it.id }) { asset ->
+                    Box(Modifier.aspectRatio(1f).background(PanelRaised).clickable {
+                        onSelectRemote(state.remoteMedia.indexOf(asset))
+                    }) {
+                        if (asset.isDocument && asset.thumbnailUrl.isBlank()) {
+                            Text("▤\n${asset.name}", color = Cream, maxLines = 3,
+                                modifier = Modifier.align(Alignment.Center).padding(8.dp))
+                        } else RemoteImage(asset.thumbnailUrl, state.server?.deviceToken.orEmpty(), asset.needsAuth,
+                            asset.name, Modifier.fillMaxSize(), ContentScale.Crop)
+                        if (asset.isVideo) VideoBadge()
+                    }
                 }
             }
             if (state.remoteLoading) item(span = { GridItemSpan(3) }) {

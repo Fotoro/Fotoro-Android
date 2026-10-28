@@ -2,6 +2,7 @@ package com.nc.fotoro.data
 
 import android.os.Build
 import android.net.Uri
+import android.util.Base64
 import android.content.Context
 import com.nc.fotoro.BuildConfig
 import java.io.IOException
@@ -29,13 +30,15 @@ class FotoroApi(private val store: SecureStore) {
     private val website = "https://fotoro.vercel.app"
 
     private suspend fun request(method: String, url: String, body: JSONObject? = null, bearer: String? = null,
-                                extraHeaders: Map<String, String> = emptyMap()): JSONObject = withContext(Dispatchers.IO) {
+                                extraHeaders: Map<String, String> = emptyMap(), readTimeoutSeconds: Long = 60): JSONObject = withContext(Dispatchers.IO) {
         val builder = Request.Builder().url(url)
         bearer?.let { builder.header("Authorization", "Bearer $it") }
         extraHeaders.forEach { (key, value) -> builder.header(key, value) }
         val requestBody = body?.toString()?.toRequestBody(jsonType)
         builder.method(method, requestBody)
-        client.newCall(builder.build()).execute().use { response ->
+        val callClient = if (readTimeoutSeconds == 60L) client
+            else client.newBuilder().readTimeout(readTimeoutSeconds, TimeUnit.SECONDS).build()
+        callClient.newCall(builder.build()).execute().use { response ->
             val raw = response.body?.string().orEmpty()
             val data = runCatching { JSONObject(raw) }.getOrDefault(JSONObject())
             if (!response.isSuccessful) throw ApiFailure(response.code, data.optString("error", "Request failed (${response.code})"))
@@ -52,11 +55,40 @@ class FotoroApi(private val store: SecureStore) {
             .also { store.account = it }
     }
 
-    suspend fun validAccountToken(): String = refreshGate.withLock {
+    suspend fun startBrowserSignIn(): Pair<PendingBrowserSignIn, String> {
+        val response = request("POST", "$website/api/auth/mobile-handoff", JSONObject())
+        val state = response.getString("state")
+        val loginUrl = response.getString("login_url")
+        require(state.matches(Regex("[a-f0-9]{64}")) &&
+            Uri.parse(loginUrl).scheme == "https" && Uri.parse(loginUrl).host == "fotoro.vercel.app") {
+            "Browser sign-in returned an invalid URL"
+        }
+        val pending = PendingBrowserSignIn(state, System.currentTimeMillis() + 15 * 60_000)
+        store.pendingBrowserSignIn = pending
+        return pending to loginUrl
+    }
+
+    suspend fun pollBrowserSignIn(state: String): AccountSession? {
+        val response = request("GET", "$website/api/auth/mobile-handoff?state=${Uri.encode(state)}")
+        if (response.optString("status") != "complete") return null
+        val access = response.getString("access_token")
+        val payload = String(Base64.decode(access.split('.')[1], Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP))
+        val expires = JSONObject(payload).optLong("exp", System.currentTimeMillis() / 1000 + 3600)
+        val account = AccountSession(access, response.getString("refresh_token"), expires,
+            response.getString("user_id"), response.optString("email"), response.optString("name"))
+        store.account = account
+        store.pendingBrowserSignIn = null
+        return account
+    }
+
+    suspend fun validAccountToken(forceRefresh: Boolean = false, rejectedToken: String? = null): String = refreshGate.withLock {
         // Refresh tokens rotate. Workers and screens must re-read the stored session
         // under one process-wide lock before exchanging it.
         val account = store.account ?: throw ApiFailure(401, "Sign in to continue")
-        if (account.expiresAt > System.currentTimeMillis() / 1000 + 90) return@withLock account.accessToken
+        if (account.expiresAt > System.currentTimeMillis() / 1000 + 90 &&
+            (!forceRefresh || (rejectedToken != null && account.accessToken != rejectedToken))) {
+            return@withLock account.accessToken
+        }
         val url = BuildConfig.FOTORO_SUPABASE_URL.trimEnd('/')
         val key = BuildConfig.FOTORO_SUPABASE_ANON_KEY
         if (url.isBlank() || key.isBlank()) throw ApiFailure(401, "Supabase refresh configuration is missing")
@@ -75,7 +107,7 @@ class FotoroApi(private val store: SecureStore) {
     }
 
     suspend fun pair(): PairedServer {
-        val session = request("POST", "$website/api/pairing", JSONObject(), validAccountToken())
+        val session = authorizedRequest("POST", "$website/api/pairing", JSONObject())
         val url = session.getString("server_url").trimEnd('/')
         require(url.startsWith("https://") && url.substringAfter("https://").substringBefore('/').endsWith(".ts.net")) {
             "Pairing returned an invalid private server URL"
@@ -133,21 +165,32 @@ class FotoroApi(private val store: SecureStore) {
         return request("GET", "${server.url}/api/v1/media?page=$page&limit=100", bearer = server.deviceToken)
     }
 
-    private suspend fun ownerGet(path: String): JSONObject {
-        val server = store.server ?: throw ApiFailure(401, "Pair this phone first")
-        return request("GET", server.url + path, bearer = validAccountToken())
+    private suspend fun authorizedRequest(method: String, url: String, body: JSONObject? = null,
+                                          readTimeoutSeconds: Long = 60): JSONObject {
+        val token = validAccountToken()
+        return try { request(method, url, body, token, readTimeoutSeconds = readTimeoutSeconds) }
+        catch (error: ApiFailure) {
+            if (error.status != 401) throw error
+            request(method, url, body, validAccountToken(forceRefresh = true, rejectedToken = token),
+                readTimeoutSeconds = readTimeoutSeconds)
+        }
     }
 
-    private suspend fun ownerPost(path: String, body: JSONObject = JSONObject()): JSONObject {
+    private suspend fun ownerGet(path: String): JSONObject {
         val server = store.server ?: throw ApiFailure(401, "Pair this phone first")
-        return request("POST", server.url + path, body, validAccountToken())
+        return authorizedRequest("GET", server.url + path)
+    }
+
+    private suspend fun ownerPost(path: String, body: JSONObject = JSONObject(), timeoutSeconds: Long = 60): JSONObject {
+        val server = store.server ?: throw ApiFailure(401, "Pair this phone first")
+        return authorizedRequest("POST", server.url + path, body, timeoutSeconds)
     }
 
     suspend fun dashboardMetrics() = ownerGet("/api/stats")
     suspend fun linkedDevices() = ownerGet("/devices")
     suspend fun storageStatus() = ownerGet("/api/v1/storage")
-    suspend fun syncStorage() = ownerPost("/api/v1/storage/sync")
-    suspend fun verifyStorage() = ownerPost("/api/v1/storage/verify")
+    suspend fun syncStorage() = ownerPost("/api/v1/storage/sync", timeoutSeconds = 150)
+    suspend fun verifyStorage() = ownerPost("/api/v1/storage/verify", timeoutSeconds = 150)
     suspend fun diagnostics() = ownerGet("/api/v1/diagnostics")
     suspend fun processingSchedule() = ownerGet("/api/scheduler/config")
     suspend fun updateProcessingSchedule(enabled: Boolean) =
@@ -159,7 +202,7 @@ class FotoroApi(private val store: SecureStore) {
     }
 
     suspend fun pairingInvitation(): JSONObject =
-        request("POST", "$website/api/pairing", JSONObject(), validAccountToken())
+        authorizedRequest("POST", "$website/api/pairing", JSONObject())
 
     private fun mediaRequest(asset: ServerAsset): Request {
         val server = store.server ?: throw ApiFailure(401, "Pair this phone first")

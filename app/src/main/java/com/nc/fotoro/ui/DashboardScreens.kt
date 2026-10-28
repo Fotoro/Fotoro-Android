@@ -49,7 +49,9 @@ import com.nc.fotoro.ui.theme.Line
 import com.nc.fotoro.ui.theme.Mint
 import com.nc.fotoro.ui.theme.Muted
 import com.nc.fotoro.ui.theme.Panel
+import java.time.Instant
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 internal fun readableBytes(bytes: Long): String {
@@ -100,6 +102,13 @@ private fun Action(label: String, busy: Boolean = false, onClick: () -> Unit) {
 
 @Composable
 internal fun DevicesScreen(state: AppUiState, model: AppViewModel) {
+    LaunchedEffect(state.pairingExpiresAt) {
+        val expiry = runCatching { Instant.parse(state.pairingExpiresAt).toEpochMilli() }.getOrNull()
+        if (expiry != null) {
+            delay((expiry - System.currentTimeMillis()).coerceAtLeast(0))
+            model.clearPairingInvitation()
+        }
+    }
     Page("Devices", "Your server and paired devices") {
         Text("${state.devices.size} linked devices", color = Cream, style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(12.dp))
@@ -219,6 +228,7 @@ internal fun SettingsScreen(state: AppUiState, model: AppViewModel) {
             DataRow("Search index", "${diagnostics.searchVectors} vectors", diagnostics.searchModel)
         }
         Action("Refresh diagnostics", state.dashboardLoading, model::refreshDashboard)
+        Action("Reconnect this phone", state.busy, model::pair)
         Spacer(Modifier.height(24.dp))
         Text("Sign out", color = Coral, modifier = Modifier.clickable { model.signOut() }.padding(14.dp))
     }

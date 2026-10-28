@@ -18,6 +18,7 @@ import com.nc.fotoro.data.LinkedDevice
 import com.nc.fotoro.data.LocalAsset
 import com.nc.fotoro.data.MediaCatalog
 import com.nc.fotoro.data.PairedServer
+import com.nc.fotoro.data.PendingBrowserSignIn
 import com.nc.fotoro.data.SecureStore
 import com.nc.fotoro.data.ServerAsset
 import com.nc.fotoro.data.ServerDiagnostics
@@ -34,6 +35,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.supervisorScope
 import org.json.JSONObject
 
 data class AppUiState(
@@ -41,6 +48,7 @@ data class AppUiState(
     val busy: Boolean = false,
     val account: AccountSession? = null,
     val reauthRequired: Boolean = false,
+    val browserSignInPending: Boolean = false,
     val server: PairedServer? = null,
     val serverOnline: Boolean = false,
     val mediaGranted: Boolean = false,
@@ -88,6 +96,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val api = FotoroApi(store)
     private val catalog = MediaCatalog(application)
     private val prefs = application.getSharedPreferences("fotoro_sync", 0)
+    private var lastDashboardRefresh = 0L
+    private var browserPollingJob: Job? = null
     private val workManager = WorkManager.getInstance(application)
     private val workLiveData = workManager.getWorkInfosForUniqueWorkLiveData(SyncScheduler.MANUAL)
     private val autoWorkLiveData = workManager.getWorkInfosForUniqueWorkLiveData(SyncScheduler.AUTO)
@@ -130,6 +140,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     else error.message ?: "Could not check your account session") }
             }
         }
+        store.pendingBrowserSignIn?.let { pending ->
+            if (pending.expiresAt > System.currentTimeMillis()) pollBrowserSignIn(pending)
+            else store.pendingBrowserSignIn = null
+        }
         if (store.server != null) { checkServer(); loadRemote(); refreshDashboard() }
         if (catalog.hasAccess()) refreshMedia()
         if (store.server != null && catalog.hasAccess()) SyncScheduler.scheduleAuto(application, auto, wifi)
@@ -139,12 +153,52 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(busy = true, error = null) }
         runCatching { api.signIn(googleToken) }
             .onSuccess { account ->
+                browserPollingJob?.cancel()
+                store.pendingBrowserSignIn = null
                 if (store.server != null && state.value.account?.userId != account.userId) store.server = null
                 _state.update { it.copy(account = account, server = store.server, busy = false,
-                    reauthRequired = false) }
+                    reauthRequired = false, browserSignInPending = false) }
                 if (store.server != null) { checkServer(); loadRemote(); refreshDashboard() }
             }
             .onFailure { error -> _state.update { it.copy(busy = false, error = error.message ?: "Sign-in failed") } }
+    }
+
+    fun startBrowserSignIn(openBrowser: (String) -> Unit) = viewModelScope.launch {
+        _state.update { it.copy(busy = true, error = null) }
+        runCatching { api.startBrowserSignIn() }
+            .onSuccess { (pending, url) ->
+                _state.update { it.copy(busy = false, browserSignInPending = true) }
+                runCatching { openBrowser(url) }.onFailure { error ->
+                    _state.update { it.copy(error = error.message ?: "Could not open browser") }
+                }
+                pollBrowserSignIn(pending)
+            }
+            .onFailure { error -> _state.update { it.copy(busy = false,
+                error = error.message ?: "Could not start browser sign-in") } }
+    }
+
+    private fun pollBrowserSignIn(pending: PendingBrowserSignIn) {
+        browserPollingJob?.cancel()
+        browserPollingJob = viewModelScope.launch {
+            _state.update { it.copy(browserSignInPending = true) }
+            while (isActive && System.currentTimeMillis() < pending.expiresAt) {
+                val result = runCatching { api.pollBrowserSignIn(pending.state) }
+                val account = result.getOrNull()
+                if (account != null) {
+                    if (state.value.account != null && state.value.account?.userId != account.userId) store.server = null
+                    _state.update { it.copy(account = account, server = store.server,
+                        reauthRequired = false, browserSignInPending = false, error = null) }
+                    if (store.server != null) { checkServer(); loadRemote(); refreshDashboard() }
+                    return@launch
+                }
+                val error = result.exceptionOrNull()
+                if (error is ApiFailure && error.status == 410) break
+                delay(5_000)
+            }
+            store.pendingBrowserSignIn = null
+            _state.update { it.copy(browserSignInPending = false,
+                error = "Browser sign-in expired. Try again.") }
+        }
     }
 
     fun pair() = viewModelScope.launch {
@@ -157,12 +211,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 SyncScheduler.scheduleAuto(getApplication(), state.value.autoSync, state.value.wifiOnly)
                 if (state.value.mediaGranted && state.value.autoSync) SyncScheduler.syncNow(getApplication(), state.value.wifiOnly)
             }
-            .onFailure { error -> _state.update { it.copy(busy = false, error = error.message ?: "Pairing failed") } }
+            .onFailure { error -> _state.update { it.copy(busy = false) }; reportAccountFailure(error, "Pairing failed") }
     }
 
     fun checkServer() = viewModelScope.launch {
         val online = api.testServer()
         _state.update { it.copy(serverOnline = online) }
+    }
+
+    fun onForeground() {
+        if (store.server == null) return
+        checkServer()
+        if (System.currentTimeMillis() - lastDashboardRefresh > 45_000) refreshDashboard()
     }
 
     fun refreshDashboard() = viewModelScope.launch {
@@ -176,24 +236,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 else error.message ?: "Could not check your account session") }
             return@launch
         }
-        runCatching { api.dashboardMetrics() }.onSuccess { response ->
-            prefs.edit().putString("dashboard_metrics", response.toString()).apply()
-            _state.update { it.copy(metrics = response.toDashboardMetrics(), metricsCached = false, serverOnline = true) }
-        }.onFailure { error ->
-            _state.update { it.copy(serverOnline = false, error = error.message ?: "Could not load dashboard") }
-        }
-        runCatching { api.linkedDevices().optJSONArray("devices") }.onSuccess { list ->
-            val devices = (0 until (list?.length() ?: 0)).map { list!!.getJSONObject(it).toLinkedDevice() }
-            _state.update { it.copy(devices = devices) }
-        }
-        runCatching { api.storageStatus().toBackupStatus() }.onSuccess { storage ->
-            _state.update { it.copy(storage = storage) }
-        }
-        runCatching { api.diagnostics().toServerDiagnostics() }.onSuccess { diagnostics ->
-            _state.update { it.copy(diagnostics = diagnostics) }
-        }
-        runCatching { api.processingSchedule().toProcessingSchedule() }.onSuccess { schedule ->
-            _state.update { it.copy(schedule = schedule) }
+        supervisorScope {
+            listOf(
+                async { runCatching { api.dashboardMetrics() }.onSuccess { response ->
+                    prefs.edit().putString("dashboard_metrics", response.toString()).apply()
+                    lastDashboardRefresh = System.currentTimeMillis()
+                    _state.update { it.copy(metrics = response.toDashboardMetrics(), metricsCached = false) }
+                }.onFailure { error -> reportAccountFailure(error, "Could not load dashboard") } },
+                async { runCatching { api.linkedDevices().optJSONArray("devices") }.onSuccess { list ->
+                    val devices = (0 until (list?.length() ?: 0)).map { list!!.getJSONObject(it).toLinkedDevice() }
+                    _state.update { it.copy(devices = devices) }
+                } },
+                async { runCatching { api.storageStatus().toBackupStatus() }.onSuccess { storage ->
+                    _state.update { it.copy(storage = storage) }
+                } },
+                async { runCatching { api.diagnostics().toServerDiagnostics() }.onSuccess { diagnostics ->
+                    _state.update { it.copy(diagnostics = diagnostics) }
+                } },
+                async { runCatching { api.processingSchedule().toProcessingSchedule() }.onSuccess { schedule ->
+                    _state.update { it.copy(schedule = schedule) }
+                } },
+            ).awaitAll()
         }
         _state.update { it.copy(dashboardLoading = false) }
     }
@@ -201,7 +264,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setProcessingEnabled(enabled: Boolean) = viewModelScope.launch {
         runCatching { api.updateProcessingSchedule(enabled); api.processingSchedule().toProcessingSchedule() }
             .onSuccess { updated -> _state.update { it.copy(schedule = updated) } }
-            .onFailure { error -> _state.update { it.copy(error = error.message ?: "Could not update schedule") } }
+            .onFailure { error -> reportAccountFailure(error, "Could not update schedule") }
     }
 
     fun syncServerStorage() = viewModelScope.launch {
@@ -209,7 +272,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { api.syncStorage() }.onSuccess { response ->
             _state.update { it.copy(storage = response.getJSONObject("storage").toBackupStatus()) }
             refreshDashboard()
-        }.onFailure { error -> _state.update { it.copy(error = error.message ?: "Backup failed") } }
+        }.onFailure { error -> reportAccountFailure(error, "Backup failed") }
         _state.update { it.copy(busy = false) }
     }
 
@@ -217,7 +280,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(busy = true) }
         runCatching { api.verifyStorage() }.onSuccess { response ->
             _state.update { it.copy(storage = response.getJSONObject("storage").toBackupStatus()) }
-        }.onFailure { error -> _state.update { it.copy(error = error.message ?: "Verification failed") } }
+        }.onFailure { error -> reportAccountFailure(error, "Verification failed") }
         _state.update { it.copy(busy = false) }
     }
 
@@ -225,8 +288,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(searchQuery = query, searchLoading = query.isNotBlank(), searchHits = emptyList()) }
         if (query.isBlank()) return@launch
         runCatching {
-            val token = api.validAccountToken()
             val response = api.search(query).optJSONArray("results")
+            val token = api.validAccountToken()
             val server = requireNotNull(store.server)
             val hits = (0 until (response?.length() ?: 0)).map { index ->
                 val row = response!!.getJSONObject(index)
@@ -235,11 +298,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }.filter { it.hash.isNotBlank() }
             token to hits
         }.onSuccess { (token, hits) -> _state.update { it.copy(searchToken = token, searchHits = hits, searchLoading = false) } }
-            .onFailure { error -> _state.update { it.copy(searchLoading = false, error = error.message ?: "Search failed") } }
+            .onFailure { error -> _state.update { it.copy(searchLoading = false) }; reportAccountFailure(error, "Search failed") }
     }
 
     fun openSearchHit(hit: SearchHit) = viewModelScope.launch {
-        runCatching { api.mediaItem(hit.hash).toServerAsset(requireNotNull(store.server)) }
+        runCatching {
+            val token = api.validAccountToken()
+            _state.update { it.copy(searchToken = token) }
+            try { api.mediaItem(hit.hash).toServerAsset(requireNotNull(store.server)) }
+            catch (error: ApiFailure) {
+                if (error.status != 404 || !hit.hash.matches(Regex("[a-fA-F0-9]{64}"))) throw error
+                val server = requireNotNull(store.server)
+                ServerAsset(hit.hash, hit.caption.ifBlank { "Search result" }, false, "photo", "image/jpeg",
+                    0, "", false, 0, hit.thumbnailUrl,
+                    "${server.url}/api/image/${hit.hash}", "${server.url}/api/image/${hit.hash}", true)
+            }
+        }
             .onSuccess { asset -> _state.update { it.copy(searchedAsset = asset) } }
             .onFailure { error -> _state.update { it.copy(error = error.message ?: "Could not open item") } }
     }
@@ -250,10 +324,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { api.pairingInvitation() }.onSuccess { response ->
             _state.update { it.copy(pairingPayload = response.optString("qr_payload"),
                 pairingExpiresAt = response.optString("expires_at")) }
-        }.onFailure { error -> _state.update { it.copy(error = error.message ?: "Could not create pairing code") } }
+        }.onFailure { error -> reportAccountFailure(error, "Could not create pairing code") }
     }
 
     fun clearPairingInvitation() { _state.update { it.copy(pairingPayload = "", pairingExpiresAt = "") } }
+
+    private fun reportAccountFailure(error: Throwable, fallback: String) {
+        val expired = error is ApiFailure && error.status == 401
+        _state.update { it.copy(reauthRequired = it.reauthRequired || expired,
+            error = if (expired) "Your account session expired. Continue with Google to reconnect."
+                else error.message ?: fallback) }
+    }
 
     fun loadDocument(asset: ServerAsset) = viewModelScope.launch {
         if (state.value.documentAssetId == asset.id &&
@@ -343,6 +424,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun signOut() {
+        browserPollingJob?.cancel()
         SyncScheduler.scheduleAuto(getApplication(), false)
         workManager.cancelUniqueWork(SyncScheduler.MANUAL)
         workManager.cancelUniqueWork(SyncScheduler.SELECTED)

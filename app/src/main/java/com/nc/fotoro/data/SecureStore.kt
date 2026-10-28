@@ -21,6 +21,7 @@ data class AccountSession(
 )
 
 data class PairedServer(val url: String, val deviceId: String, val deviceToken: String)
+data class PendingBrowserSignIn(val state: String, val expiresAt: Long)
 
 /** Credentials stay off Android backup and are encrypted with a non-exportable Keystore key. */
 class SecureStore(context: Context) {
@@ -72,6 +73,14 @@ class SecureStore(context: Context) {
         get() = get("server")?.let { PairedServer(it.getString("url"), it.getString("id"), it.getString("token")) }
         set(value) = put("server", value?.let {
             JSONObject().put("url", it.url).put("id", it.deviceId).put("token", it.deviceToken)
+        })
+
+    var pendingBrowserSignIn: PendingBrowserSignIn?
+        get() = get("browser_signin")?.let {
+            PendingBrowserSignIn(it.getString("state"), it.getLong("expires"))
+        }
+        set(value) = put("browser_signin", value?.let {
+            JSONObject().put("state", it.state).put("expires", it.expiresAt)
         })
 
     fun clear() { prefs.edit().clear().apply() }

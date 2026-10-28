@@ -59,6 +59,9 @@ class MainActivity : ComponentActivity() {
             FotoroAndroidTheme {
                 FotoroApp(model,
                     onGoogleSignIn = ::signInWithGoogle,
+                    onBrowserSignIn = { model.startBrowserSignIn { url ->
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    } },
                     onPickFiles = { selectedFiles.launch(arrayOf("*/*")) },
                     onMediaPermission = {
                         val permissions = if (Build.VERSION.SDK_INT >= 34) arrayOf(
@@ -76,6 +79,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         model.refreshMedia()
+        model.onForeground()
     }
 
     override fun onStart() {
