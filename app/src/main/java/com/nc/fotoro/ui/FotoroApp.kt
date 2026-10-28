@@ -4,12 +4,8 @@ import android.content.Intent
 import android.net.Uri
 import android.text.format.DateUtils
 import android.widget.VideoView
-import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -47,18 +43,15 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -78,6 +71,7 @@ import coil3.compose.AsyncImage
 import coil3.network.NetworkHeaders
 import coil3.network.httpHeaders
 import coil3.request.ImageRequest
+import coil3.video.VideoFrameDecoder
 import com.nc.fotoro.AppUiState
 import com.nc.fotoro.AppViewModel
 import com.nc.fotoro.data.LocalAsset
@@ -91,7 +85,7 @@ import com.nc.fotoro.ui.theme.Muted
 import com.nc.fotoro.ui.theme.Panel
 import com.nc.fotoro.ui.theme.PanelRaised
 import kotlinx.coroutines.delay
-import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 @Composable
 fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onMediaPermission: () -> Unit) {
@@ -341,7 +335,7 @@ private fun OverviewScreen(state: AppUiState, model: AppViewModel, modifier: Mod
         }
         Spacer(Modifier.height(26.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            StatCard("${maxOf(state.syncTotal, state.media.size)}", "ON PHONE", Modifier.weight(1f))
+            StatCard("${state.localTotal}", "ON PHONE", Modifier.weight(1f))
             StatCard("${state.backedUp}", "TWO COPIES", Modifier.weight(1f))
         }
         Spacer(Modifier.height(12.dp))
@@ -360,9 +354,7 @@ private fun OverviewScreen(state: AppUiState, model: AppViewModel, modifier: Mod
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             state.media.take(3).forEach { asset ->
-                AsyncImage(model = asset.uri, contentDescription = asset.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.weight(1f).aspectRatio(1f).background(PanelRaised))
+                LocalThumbnail(asset, Modifier.weight(1f).aspectRatio(1f).background(PanelRaised))
             }
         }
         Spacer(Modifier.height(26.dp))
@@ -396,7 +388,7 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
                 Spacer(Modifier.height(8.dp))
                 Text("Library", color = Cream, style = MaterialTheme.typography.headlineLarge)
                 Spacer(Modifier.height(5.dp))
-                Text(if (source == "On phone") "${maxOf(state.syncTotal, state.media.size)} items on this phone"
+                Text(if (source == "On phone") "${state.localTotal} items on this phone"
                     else "${state.remoteTotal} items on your server", color = Muted)
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
@@ -421,8 +413,7 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
                 Box(Modifier.aspectRatio(1f).background(PanelRaised).clickable {
                     onSelect(shown.indexOf(asset))
                 }) {
-                    AsyncImage(model = asset.uri, contentDescription = asset.name,
-                        contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                    LocalThumbnail(asset, Modifier.fillMaxSize())
                     if (asset.isVideo) VideoBadge()
                 }
             }
@@ -461,6 +452,17 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
 private fun VideoBadge() {
     Text("▶", color = Cream, modifier = Modifier.padding(6.dp).background(Ink.copy(alpha = .70f))
         .padding(horizontal = 6.dp, vertical = 2.dp))
+}
+
+@Composable
+private fun LocalThumbnail(asset: LocalAsset, modifier: Modifier) {
+    val context = LocalContext.current
+    val model = remember(asset.stableId) {
+        ImageRequest.Builder(context).data(asset.uri).apply {
+            if (asset.isVideo) decoderFactory { result, options, _ -> VideoFrameDecoder(result.source, options) }
+        }.build()
+    }
+    AsyncImage(model = model, contentDescription = asset.name, contentScale = ContentScale.Crop, modifier = modifier)
 }
 
 @Composable
@@ -540,9 +542,11 @@ private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modif
 @Composable
 private fun Viewer(assets: List<LocalAsset>, initial: Int, close: () -> Unit) {
     val pager = rememberPagerState(initialPage = initial, pageCount = { assets.size })
+    val scope = rememberCoroutineScope()
+    var zoomedPage by remember { mutableIntStateOf(-1) }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize().background(Ink)) {
-            HorizontalPager(pager, modifier = Modifier.fillMaxSize()) { index ->
+            HorizontalPager(pager, modifier = Modifier.fillMaxSize(), userScrollEnabled = pager.currentPage != zoomedPage) { index ->
                 val asset = assets[index]
                 if (asset.isVideo) {
                     androidx.compose.ui.viewinterop.AndroidView(factory = { context ->
@@ -555,6 +559,7 @@ private fun Viewer(assets: List<LocalAsset>, initial: Int, close: () -> Unit) {
                     Box(Modifier.fillMaxSize().pointerInput(asset.stableId) {
                         detectTransformGestures { _, delta, change, _ ->
                             zoom = (zoom * change).coerceIn(1f, 5f)
+                            zoomedPage = if (zoom > 1f) index else -1
                             if (zoom > 1f) { panX += delta.x; panY += delta.y }
                             else { panX = 0f; panY = 0f }
                         }
@@ -575,16 +580,34 @@ private fun Viewer(assets: List<LocalAsset>, initial: Int, close: () -> Unit) {
                     Text("${pager.currentPage + 1} / ${assets.size}", color = Muted, fontSize = 12.sp)
                 }
             }
+            ViewerControls(pager.currentPage, assets.size,
+                previous = { scope.launch { pager.animateScrollToPage(pager.currentPage - 1) } },
+                next = { scope.launch { pager.animateScrollToPage(pager.currentPage + 1) } },
+                modifier = Modifier.align(Alignment.BottomCenter))
         }
+    }
+}
+
+@Composable
+private fun ViewerControls(page: Int, total: Int, previous: () -> Unit, next: () -> Unit, modifier: Modifier) {
+    Row(modifier.fillMaxWidth().background(Ink.copy(alpha = .82f)).padding(horizontal = 22.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+        Text("‹", color = if (page > 0) Cream else Muted, fontSize = 32.sp,
+            modifier = Modifier.clickable(enabled = page > 0, onClick = previous).padding(horizontal = 14.dp))
+        Text("PINCH TO ZOOM", color = Muted, style = MaterialTheme.typography.labelMedium)
+        Text("›", color = if (page < total - 1) Cream else Muted, fontSize = 32.sp,
+            modifier = Modifier.clickable(enabled = page < total - 1, onClick = next).padding(horizontal = 14.dp))
     }
 }
 
 @Composable
 private fun RemoteViewer(assets: List<ServerAsset>, deviceToken: String, initial: Int, close: () -> Unit) {
     val pager = rememberPagerState(initialPage = initial, pageCount = { assets.size })
+    val scope = rememberCoroutineScope()
+    var zoomedPage by remember { mutableIntStateOf(-1) }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize().background(Ink)) {
-            HorizontalPager(pager, modifier = Modifier.fillMaxSize()) { index ->
+            HorizontalPager(pager, modifier = Modifier.fillMaxSize(), userScrollEnabled = pager.currentPage != zoomedPage) { index ->
                 val asset = assets[index]
                 if (asset.isVideo) {
                     androidx.compose.ui.viewinterop.AndroidView(factory = { context ->
@@ -602,6 +625,7 @@ private fun RemoteViewer(assets: List<ServerAsset>, deviceToken: String, initial
                     Box(Modifier.fillMaxSize().pointerInput(asset.id) {
                         detectTransformGestures { _, delta, change, _ ->
                             zoom = (zoom * change).coerceIn(1f, 5f)
+                            zoomedPage = if (zoom > 1f) index else -1
                             if (zoom > 1f) { panX += delta.x; panY += delta.y }
                             else { panX = 0f; panY = 0f }
                         }
@@ -621,6 +645,10 @@ private fun RemoteViewer(assets: List<ServerAsset>, deviceToken: String, initial
                     Text("${pager.currentPage + 1} / ${assets.size} · On server", color = Muted, fontSize = 12.sp)
                 }
             }
+            ViewerControls(pager.currentPage, assets.size,
+                previous = { scope.launch { pager.animateScrollToPage(pager.currentPage - 1) } },
+                next = { scope.launch { pager.animateScrollToPage(pager.currentPage + 1) } },
+                modifier = Modifier.align(Alignment.BottomCenter))
         }
     }
 }

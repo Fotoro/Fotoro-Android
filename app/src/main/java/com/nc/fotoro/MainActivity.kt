@@ -16,6 +16,7 @@ import androidx.activity.viewModels
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
+import androidx.credentials.exceptions.NoCredentialException
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import androidx.lifecycle.lifecycleScope
@@ -25,7 +26,6 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val model: AppViewModel by viewModels()
-    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
     private val syncHandler = Handler(Looper.getMainLooper())
     private val changedMedia = Runnable {
         model.syncOnNewMedia()
@@ -41,6 +41,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
+            val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
             val mediaPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
                 model.refreshMedia()
                 if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -93,6 +94,8 @@ class MainActivity : ComponentActivity() {
                 }?.let { GoogleIdTokenCredential.createFrom(it.data) }
                     ?: error("Google did not return an ID token")
                 model.signIn(google.idToken)
+            } catch (_: NoCredentialException) {
+                model.reportError("No Google account is available on this phone. Add one in Android settings and try again.")
             } catch (error: Exception) {
                 model.reportError(error.message ?: "Google sign-in was cancelled")
             }

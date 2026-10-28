@@ -2,6 +2,8 @@ package com.nc.fotoro
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import androidx.credentials.ClearCredentialStateRequest
+import androidx.credentials.CredentialManager
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -29,6 +31,7 @@ data class AppUiState(
     val autoSync: Boolean = true,
     val wifiOnly: Boolean = true,
     val media: List<LocalAsset> = emptyList(),
+    val localTotal: Int = 0,
     val remoteMedia: List<ServerAsset> = emptyList(),
     val remoteTotal: Int = 0,
     val remoteLoading: Boolean = false,
@@ -50,8 +53,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = application.getSharedPreferences("fotoro_sync", 0)
     private val workManager = WorkManager.getInstance(application)
     private val workLiveData = workManager.getWorkInfosForUniqueWorkLiveData(SyncScheduler.MANUAL)
-    private val observer = androidx.lifecycle.Observer<List<WorkInfo>> { jobs ->
-        val job = jobs.firstOrNull()
+    private val autoWorkLiveData = workManager.getWorkInfosForUniqueWorkLiveData(SyncScheduler.AUTO)
+    private val observer = androidx.lifecycle.Observer<List<WorkInfo>> {
+        val jobs = workLiveData.value.orEmpty() + autoWorkLiveData.value.orEmpty()
+        val job = jobs.firstOrNull { it.state == WorkInfo.State.RUNNING }
+            ?: jobs.firstOrNull { it.state == WorkInfo.State.ENQUEUED }
+            ?: jobs.lastOrNull()
         _state.update { it.copy(syncState = job?.state,
             syncDone = job?.progress?.getInt("done", 0) ?: 0,
             syncTotal = job?.progress?.getInt("total", 0) ?: 0,
@@ -64,6 +71,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         workLiveData.observeForever(observer)
+        autoWorkLiveData.observeForever(observer)
         val auto = prefs.getBoolean("auto", true)
         val wifi = prefs.getBoolean("wifi_only", true)
         _state.update { it.copy(account = store.account, server = store.server,
@@ -124,6 +132,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val granted = catalog.hasAccess()
         _state.update { it.copy(mediaGranted = granted) }
         if (granted) {
+            runCatching { catalog.count() }.onSuccess { total -> _state.update { it.copy(localTotal = total) } }
             runCatching { catalog.list(limit = 1000) }
                 .onSuccess { assets -> _state.update { it.copy(media = assets) } }
                 .onFailure { error -> _state.update { it.copy(error = error.message ?: "Could not read your photos") } }
@@ -171,6 +180,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         SyncScheduler.scheduleAuto(getApplication(), false)
         workManager.cancelUniqueWork(SyncScheduler.MANUAL)
         store.clear()
+        viewModelScope.launch {
+            runCatching { CredentialManager.create(getApplication()).clearCredentialState(ClearCredentialStateRequest()) }
+        }
         val auto = prefs.getBoolean("auto", true)
         val wifi = prefs.getBoolean("wifi_only", true)
         prefs.edit().clear().putBoolean("auto", auto).putBoolean("wifi_only", wifi).apply()
@@ -187,6 +199,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         workLiveData.removeObserver(observer)
+        autoWorkLiveData.removeObserver(observer)
         super.onCleared()
     }
 }

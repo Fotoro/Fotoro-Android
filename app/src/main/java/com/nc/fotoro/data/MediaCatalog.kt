@@ -25,6 +25,21 @@ data class LocalAsset(
 )
 
 class MediaCatalog(private val context: Context) {
+    suspend fun count(): Int = withContext(Dispatchers.IO) {
+        if (!hasAccess()) return@withContext 0
+        context.contentResolver.query(MediaStore.Files.getContentUri("external"),
+            arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (?, ?)",
+            arrayOf(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
+                MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()), null
+        )?.use { it.count } ?: 0
+    }
+
+    fun generation(): Pair<String, Long>? = try {
+        MediaStore.getVersion(context, MediaStore.VOLUME_EXTERNAL) to
+            MediaStore.getGeneration(context, MediaStore.VOLUME_EXTERNAL)
+    } catch (_: Exception) { null }
+
     fun hasAccess(): Boolean {
         val permissions = if (Build.VERSION.SDK_INT >= 33) {
             listOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO) +
@@ -86,7 +101,7 @@ class MediaCatalog(private val context: Context) {
     }
 
     suspend fun uploadChunks(asset: LocalAsset, startOffset: Long,
-                             onChunk: suspend (Long, ByteArray) -> Unit) = withContext(Dispatchers.IO) {
+                             onChunk: suspend (Long, ByteArray, Int) -> Unit) = withContext(Dispatchers.IO) {
         context.contentResolver.openFileDescriptor(asset.uri, "r")?.use { descriptor ->
             java.io.FileInputStream(descriptor.fileDescriptor).use { stream ->
                 stream.channel.position(startOffset)
@@ -100,7 +115,7 @@ class MediaCatalog(private val context: Context) {
                         if (count < 0) error("Media changed while uploading")
                         read += count
                     }
-                    onChunk(offset, if (read == buffer.size) buffer.copyOf() else buffer.copyOf(read))
+                    onChunk(offset, buffer, read)
                     offset += read
                 }
             }

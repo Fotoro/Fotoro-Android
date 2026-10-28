@@ -91,15 +91,19 @@ class FotoroApi(private val store: SecureStore) {
 
     suspend fun uploadOffset(id: String): Long {
         val server = store.server ?: throw ApiFailure(401, "Pair this phone first")
-        return request("GET", "${server.url}/api/v1/uploads/$id", bearer = server.deviceToken).getLong("received_size")
+        val upload = request("GET", "${server.url}/api/v1/uploads/$id", bearer = server.deviceToken)
+        if (upload.optString("status") !in listOf("uploading", "completed")) {
+            throw ApiFailure(410, "Upload session expired")
+        }
+        return upload.getLong("received_size")
     }
 
-    suspend fun appendChunk(id: String, offset: Long, bytes: ByteArray) = withContext(Dispatchers.IO) {
+    suspend fun appendChunk(id: String, offset: Long, bytes: ByteArray, length: Int) = withContext(Dispatchers.IO) {
         val server = store.server ?: throw ApiFailure(401, "Pair this phone first")
         val request = Request.Builder().url("${server.url}/api/v1/uploads/$id")
             .header("Authorization", "Bearer ${server.deviceToken}")
             .header("Upload-Offset", offset.toString())
-            .patch(bytes.toRequestBody("application/octet-stream".toMediaType())).build()
+            .patch(bytes.toRequestBody("application/octet-stream".toMediaType(), 0, length)).build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw ApiFailure(response.code, "Chunk upload failed (${response.code})")
         }
