@@ -95,7 +95,7 @@ fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onMediaPermission
     Box(Modifier.fillMaxSize().background(Ink)) {
         when {
             splash || state.booting -> Splash()
-            state.account == null -> AuthScreen(state, onGoogleSignIn)
+            state.account == null || state.reauthRequired -> AuthScreen(state, onGoogleSignIn)
             state.server == null -> PairScreen(state, model::pair)
             !state.mediaGranted -> PermissionScreen(onMediaPermission)
             else -> Home(state, model)
@@ -184,7 +184,7 @@ private fun AuthScreen(state: AppUiState, signIn: () -> Unit) {
         Text("Your phone captures it. Your own server keeps it.", color = Muted,
             style = MaterialTheme.typography.bodyLarge)
         Spacer(Modifier.height(48.dp))
-        PrimaryButton("Continue with Google", signIn, state.busy)
+        PrimaryButton(if (state.reauthRequired) "Reconnect with Google" else "Continue with Google", signIn, state.busy)
         Spacer(Modifier.height(18.dp))
         Text("New here? Your Fotoro account is created when you continue. Use the same Google account as your server.",
             color = Muted, style = MaterialTheme.typography.bodyMedium)

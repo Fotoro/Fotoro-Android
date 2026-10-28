@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.nc.fotoro.data.AccountSession
+import com.nc.fotoro.data.ApiFailure
 import com.nc.fotoro.data.BackupStatus
 import com.nc.fotoro.data.DashboardMetrics
 import com.nc.fotoro.data.FotoroApi
@@ -37,6 +38,7 @@ data class AppUiState(
     val booting: Boolean = true,
     val busy: Boolean = false,
     val account: AccountSession? = null,
+    val reauthRequired: Boolean = false,
     val server: PairedServer? = null,
     val serverOnline: Boolean = false,
     val mediaGranted: Boolean = false,
@@ -109,7 +111,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         loadSummary()
         if (store.account != null) viewModelScope.launch {
-            runCatching { api.validAccountToken() }.onFailure { _state.update { it.copy(error = "Sign in again to renew your session") } }
+            runCatching { api.validAccountToken() }.onFailure { error ->
+                _state.update { it.copy(reauthRequired = error is ApiFailure && error.status == 401,
+                    error = if (error is ApiFailure && error.status == 401)
+                        "Your account session expired. Continue with Google to reconnect."
+                    else error.message ?: "Could not check your account session") }
+            }
         }
         if (store.server != null) { checkServer(); loadRemote(); refreshDashboard() }
         if (catalog.hasAccess()) refreshMedia()
@@ -121,7 +128,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { api.signIn(googleToken) }
             .onSuccess { account ->
                 if (store.server != null && state.value.account?.userId != account.userId) store.server = null
-                _state.update { it.copy(account = account, server = store.server, busy = false) }
+                _state.update { it.copy(account = account, server = store.server, busy = false,
+                    reauthRequired = false) }
                 if (store.server != null) { checkServer(); loadRemote(); refreshDashboard() }
             }
             .onFailure { error -> _state.update { it.copy(busy = false, error = error.message ?: "Sign-in failed") } }
@@ -149,7 +157,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (store.server == null || state.value.dashboardLoading) return@launch
         _state.update { it.copy(dashboardLoading = true) }
         runCatching { api.validAccountToken() }.onFailure { error ->
-            _state.update { it.copy(dashboardLoading = false, error = error.message ?: "Sign in again") }
+            _state.update { it.copy(dashboardLoading = false,
+                reauthRequired = error is ApiFailure && error.status == 401,
+                error = if (error is ApiFailure && error.status == 401)
+                    "Your account session expired. Continue with Google to reconnect."
+                else error.message ?: "Could not check your account session") }
             return@launch
         }
         runCatching { api.dashboardMetrics() }.onSuccess { response ->

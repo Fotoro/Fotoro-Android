@@ -7,6 +7,8 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -16,6 +18,7 @@ import org.json.JSONObject
 class ApiFailure(val status: Int, message: String) : IOException(message)
 
 class FotoroApi(private val store: SecureStore) {
+    companion object { private val refreshGate = Mutex() }
     private val jsonType = "application/json; charset=utf-8".toMediaType()
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
@@ -46,19 +49,26 @@ class FotoroApi(private val store: SecureStore) {
             .also { store.account = it }
     }
 
-    suspend fun validAccountToken(): String {
+    suspend fun validAccountToken(): String = refreshGate.withLock {
+        // Refresh tokens rotate. Workers and screens must re-read the stored session
+        // under one process-wide lock before exchanging it.
         val account = store.account ?: throw ApiFailure(401, "Sign in to continue")
-        if (account.expiresAt > System.currentTimeMillis() / 1000 + 90) return account.accessToken
+        if (account.expiresAt > System.currentTimeMillis() / 1000 + 90) return@withLock account.accessToken
         val url = BuildConfig.FOTORO_SUPABASE_URL.trimEnd('/')
         val key = BuildConfig.FOTORO_SUPABASE_ANON_KEY
         if (url.isBlank() || key.isBlank()) throw ApiFailure(401, "Supabase refresh configuration is missing")
-        val data = request("POST", "$url/auth/v1/token?grant_type=refresh_token",
-            JSONObject().put("refresh_token", account.refreshToken), extraHeaders = mapOf("apikey" to key))
+        val data = try {
+            request("POST", "$url/auth/v1/token?grant_type=refresh_token",
+                JSONObject().put("refresh_token", account.refreshToken), extraHeaders = mapOf("apikey" to key))
+        } catch (error: ApiFailure) {
+            if (error.status == 400 || error.status == 401) throw ApiFailure(401, "Account session expired. Sign in again")
+            throw error
+        }
         val updated = account.copy(accessToken = data.getString("access_token"),
             refreshToken = data.getString("refresh_token"),
             expiresAt = System.currentTimeMillis() / 1000 + data.optLong("expires_in", 3600))
         store.account = updated
-        return updated.accessToken
+        updated.accessToken
     }
 
     suspend fun pair(): PairedServer {
