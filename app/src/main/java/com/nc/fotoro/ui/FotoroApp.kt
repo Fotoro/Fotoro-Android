@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -38,6 +39,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -86,6 +88,10 @@ import com.nc.fotoro.ui.theme.Panel
 import com.nc.fotoro.ui.theme.PanelRaised
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
+import androidx.compose.runtime.snapshotFlow
 
 @Composable
 fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onMediaPermission: () -> Unit) {
@@ -97,8 +103,7 @@ fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onMediaPermission
             splash || state.booting -> Splash()
             state.account == null || state.reauthRequired -> AuthScreen(state, onGoogleSignIn)
             state.server == null -> PairScreen(state, model::pair)
-            !state.mediaGranted -> PermissionScreen(onMediaPermission)
-            else -> Home(state, model)
+            else -> Home(state, model, onMediaPermission)
         }
         state.error?.let { message ->
             Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(16.dp)
@@ -268,11 +273,13 @@ private fun PrimaryButton(text: String, action: () -> Unit, busy: Boolean = fals
     }
 }
 
-private enum class Tab { Overview, Library, Backup }
+private enum class Tab { Overview, Library, Backup, Devices, More }
+private enum class MorePage { Menu, Storage, Processing, Settings }
 
 @Composable
-private fun Home(state: AppUiState, model: AppViewModel) {
+private fun Home(state: AppUiState, model: AppViewModel, onMediaPermission: () -> Unit) {
     var tab by remember { mutableStateOf(Tab.Overview) }
+    var morePage by remember { mutableStateOf(MorePage.Menu) }
     var selected by remember { mutableIntStateOf(-1) }
     var selectedRemote by remember { mutableIntStateOf(-1) }
     val shown = state.media.take(state.visibleCount)
@@ -282,7 +289,8 @@ private fun Home(state: AppUiState, model: AppViewModel) {
             Tab.entries.forEach { item ->
                 Column(Modifier.weight(1f).clickable { tab = item }.padding(7.dp),
                     horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(when (item) { Tab.Overview -> "◉"; Tab.Library -> "▦"; Tab.Backup -> "↥" },
+                    Text(when (item) { Tab.Overview -> "◉"; Tab.Library -> "▦"; Tab.Backup -> "↥";
+                        Tab.Devices -> "◇"; Tab.More -> "•••" },
                         color = if (tab == item) Coral else Muted, fontSize = 22.sp)
                     Text(item.name, color = if (tab == item) Cream else Muted, fontSize = 11.sp)
                 }
@@ -293,12 +301,41 @@ private fun Home(state: AppUiState, model: AppViewModel) {
             Tab.Overview -> OverviewScreen(state, model, Modifier.padding(padding), openLibrary = { tab = Tab.Library })
             Tab.Library -> LibraryScreen(state, shown, model, Modifier.padding(padding),
                 onSelect = { selected = it }, onSelectRemote = { selectedRemote = it })
-            Tab.Backup -> BackupScreen(state, model, Modifier.padding(padding))
+            Tab.Backup -> BackupScreen(state, model, Modifier.padding(padding), onMediaPermission)
+            Tab.Devices -> Box(Modifier.padding(padding)) { DevicesScreen(state, model) }
+            Tab.More -> Box(Modifier.padding(padding)) {
+                when (morePage) {
+                    MorePage.Menu -> Column(Modifier.fillMaxSize().statusBarsPadding().padding(22.dp)) {
+                        BrandHeader(); Spacer(Modifier.height(30.dp)); Label("CONTROL ROOM")
+                        Text("More", color = Cream, style = MaterialTheme.typography.headlineLarge)
+                        Spacer(Modifier.height(24.dp))
+                        listOf(Triple("Storage", "Disk capacity and backup health", MorePage.Storage),
+                            Triple("AI models", "Search and processing queue", MorePage.Processing),
+                            Triple("Settings", "Account and diagnostics", MorePage.Settings)).forEach { (label, detail, page) ->
+                            Column(Modifier.fillMaxWidth().clickable { morePage = page }
+                                .background(Panel).border(1.dp, Line).padding(18.dp)) {
+                                Text("$label  ↗", color = Cream, fontWeight = FontWeight.SemiBold)
+                                Text(detail, color = Muted)
+                            }
+                            Spacer(Modifier.height(10.dp))
+                        }
+                    }
+                    MorePage.Storage -> Box { StorageScreen(state, model); Text("‹ More", color = Coral,
+                        modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().clickable { morePage = MorePage.Menu }.padding(16.dp)) }
+                    MorePage.Processing -> Box { ProcessingScreen(state, model); Text("‹ More", color = Coral,
+                        modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().clickable { morePage = MorePage.Menu }.padding(16.dp)) }
+                    MorePage.Settings -> Box { SettingsScreen(state, model); Text("‹ More", color = Coral,
+                        modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().clickable { morePage = MorePage.Menu }.padding(16.dp)) }
+                }
+            }
         }
     }
     if (selected >= 0 && selected < shown.size) Viewer(shown, selected) { selected = -1 }
     if (selectedRemote >= 0 && selectedRemote < state.remoteMedia.size) {
         RemoteViewer(state.remoteMedia, state.server?.deviceToken.orEmpty(), selectedRemote) { selectedRemote = -1 }
+    }
+    state.searchedAsset?.let { asset ->
+        RemoteViewer(listOf(asset), state.server?.deviceToken.orEmpty(), 0, model::closeSearchHit)
     }
 }
 
@@ -335,17 +372,19 @@ private fun OverviewScreen(state: AppUiState, model: AppViewModel, modifier: Mod
         }
         Spacer(Modifier.height(26.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            StatCard("${state.localTotal}", "ON PHONE", Modifier.weight(1f))
-            StatCard("${state.backedUp}", "TWO COPIES", Modifier.weight(1f))
+            StatCard("${state.metrics?.total ?: state.remoteTotal}", "ON SERVER", Modifier.weight(1f))
+            StatCard("${state.metrics?.backupVerified ?: state.backedUp}", "TWO COPIES", Modifier.weight(1f))
         }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            StatCard("${state.primaryOnly}", "ON SERVER", Modifier.weight(1f))
+            StatCard(readableBytes(state.metrics?.mediaBytes ?: 0), "MEDIA USED", Modifier.weight(1f))
             StatCard(if (state.autoSync) "ON" else "OFF", "AUTO BACKUP", Modifier.weight(1f))
         }
         Spacer(Modifier.height(28.dp))
         PrimaryButton(if (state.syncState == WorkInfo.State.RUNNING) "Backup in progress…" else "Back up now",
             model::syncNow, state.syncState == WorkInfo.State.RUNNING)
+        Text("Refresh server data ↻", color = Coral,
+            modifier = Modifier.clickable { model.refreshDashboard() }.padding(vertical = 14.dp))
         Spacer(Modifier.height(30.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Recent frames", color = Cream, style = MaterialTheme.typography.titleLarge)
@@ -375,9 +414,21 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
                           modifier: Modifier, onSelect: (Int) -> Unit, onSelectRemote: (Int) -> Unit) {
     var filter by remember { mutableStateOf("All") }
     var source by remember { mutableStateOf("On phone") }
+    var searchText by remember { mutableStateOf("") }
+    val gridState = rememberLazyGridState()
     val visible = when (filter) { "Photos" -> shown.filterNot { it.isVideo }; "Videos" -> shown.filter { it.isVideo }; else -> shown }
-    val remote = when (filter) { "Photos" -> state.remoteMedia.filterNot { it.isVideo }; "Videos" -> state.remoteMedia.filter { it.isVideo }; else -> state.remoteMedia }
-    LazyVerticalGrid(GridCells.Fixed(3), modifier.fillMaxSize(),
+    val remote = when (filter) { "Photos" -> state.remoteMedia.filter { !it.isVideo && !it.isDocument };
+        "Videos" -> state.remoteMedia.filter { it.isVideo }; "Docs" -> state.remoteMedia.filter { it.isDocument };
+        else -> state.remoteMedia }
+    LaunchedEffect(source, state.remoteTotal, state.remoteMedia.size, state.remoteLoading, state.searchQuery) {
+        if (source == "On server" && state.searchQuery.isBlank() && !state.remoteLoading &&
+            state.remoteMedia.size < state.remoteTotal) {
+            snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+                .map { it >= gridState.layoutInfo.totalItemsCount - 10 }
+                .distinctUntilChanged().filter { it }.collect { model.loadRemote(false) }
+        }
+    }
+    LazyVerticalGrid(GridCells.Fixed(3), modifier.fillMaxSize(), state = gridState,
         contentPadding = PaddingValues(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalArrangement = Arrangement.spacedBy(3.dp)) {
         item(span = { GridItemSpan(3) }) {
@@ -400,8 +451,22 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
                     }
                 }
                 Spacer(Modifier.height(17.dp))
+                if (source == "On server") {
+                    OutlinedTextField(value = searchText, onValueChange = { searchText = it },
+                        label = { Text("Search your archive") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth())
+                    Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                        Text("Search ↗", color = Coral,
+                            modifier = Modifier.clickable { model.search(searchText.trim()) }.padding(vertical = 10.dp))
+                        if (state.searchQuery.isNotBlank()) Text("Clear", color = Muted,
+                            modifier = Modifier.clickable { searchText = ""; model.search("") }.padding(vertical = 10.dp))
+                    }
+                    if (state.searchLoading) CircularProgressIndicator(Modifier.size(20.dp), color = Coral)
+                    if (state.searchQuery.isNotBlank()) Text("${state.searchHits.size} matches for “${state.searchQuery}”", color = Muted)
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                    listOf("All", "Photos", "Videos").forEach { name ->
+                    (if (source == "On server") listOf("All", "Photos", "Videos", "Docs")
+                    else listOf("All", "Photos", "Videos")).forEach { name ->
                         Text(name, color = if (filter == name) Coral else Muted,
                             modifier = Modifier.clickable { filter = name }.padding(vertical = 7.dp))
                     }
@@ -424,11 +489,19 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
                 }
             }
         } else {
-            items(remote, key = { it.id }) { asset ->
+            if (state.searchQuery.isNotBlank()) items(state.searchHits, key = { it.hash }) { hit ->
+                Box(Modifier.aspectRatio(1f).background(PanelRaised).clickable { model.openSearchHit(hit) }) {
+                    RemoteImage(hit.thumbnailUrl, state.searchToken, true, hit.caption,
+                        Modifier.fillMaxSize(), ContentScale.Crop)
+                }
+            } else items(remote, key = { it.id }) { asset ->
                 Box(Modifier.aspectRatio(1f).background(PanelRaised).clickable {
                     onSelectRemote(state.remoteMedia.indexOf(asset))
                 }) {
-                    RemoteImage(asset.thumbnailUrl, state.server?.deviceToken.orEmpty(), asset.needsAuth,
+                    if (asset.isDocument && asset.thumbnailUrl.isBlank()) {
+                        Text("▤\n${asset.name}", color = Cream, maxLines = 3,
+                            modifier = Modifier.align(Alignment.Center).padding(8.dp))
+                    } else RemoteImage(asset.thumbnailUrl, state.server?.deviceToken.orEmpty(), asset.needsAuth,
                         asset.name, Modifier.fillMaxSize(), ContentScale.Crop)
                     if (asset.isVideo) VideoBadge()
                 }
@@ -438,7 +511,7 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
                     CircularProgressIndicator(Modifier.size(24.dp), color = Coral)
                 }
             }
-            if (!state.remoteLoading && state.remoteMedia.size < state.remoteTotal) {
+            if (state.searchQuery.isBlank() && !state.remoteLoading && state.remoteMedia.size < state.remoteTotal) {
                 item(span = { GridItemSpan(3) }) {
                     Text("Load more from server ↓", color = Coral, textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth().clickable { model.loadRemote(false) }.padding(24.dp))
@@ -478,7 +551,7 @@ private fun RemoteImage(url: String, token: String, needsAuth: Boolean, name: St
 }
 
 @Composable
-private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modifier) {
+private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modifier, onMediaPermission: () -> Unit) {
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(22.dp)) {
         BrandHeader()
         Spacer(Modifier.height(34.dp))
@@ -488,6 +561,11 @@ private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modif
         Spacer(Modifier.height(8.dp))
         Text("Original quality, direct to your server.", color = Muted)
         Spacer(Modifier.height(30.dp))
+        if (!state.mediaGranted) {
+            StepCard("!", "Allow photo access", "Select the media Android lets Fotoro back up automatically.")
+            PrimaryButton("Choose photo access", onMediaPermission)
+            Spacer(Modifier.height(20.dp))
+        }
         Row(Modifier.fillMaxWidth().background(Panel).border(1.dp, Line).padding(18.dp),
             verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -522,7 +600,8 @@ private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modif
             Text("${state.syncDone} of ${state.syncTotal} uploaded in this run", color = Muted)
             Spacer(Modifier.height(22.dp))
         }
-        PrimaryButton("Back up now", model::syncNow, state.syncState == WorkInfo.State.RUNNING)
+        PrimaryButton("Back up now", model::syncNow,
+            !state.mediaGranted || state.syncState == WorkInfo.State.RUNNING)
         Spacer(Modifier.height(18.dp))
         Text(if (state.lastSync == 0L) "No backup check yet" else "Last checked ${DateUtils.getRelativeTimeSpanString(state.lastSync)}",
             color = Muted, style = MaterialTheme.typography.bodyMedium)
