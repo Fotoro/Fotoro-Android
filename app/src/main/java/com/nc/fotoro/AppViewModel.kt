@@ -168,8 +168,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { api.startBrowserSignIn() }
             .onSuccess { (pending, url) ->
                 _state.update { it.copy(busy = false, browserSignInPending = true) }
-                runCatching { openBrowser(url) }.onFailure { error ->
-                    _state.update { it.copy(error = error.message ?: "Could not open browser") }
+                val browser = runCatching { openBrowser(url) }
+                if (browser.isFailure) {
+                    store.pendingBrowserSignIn = null
+                    _state.update { it.copy(browserSignInPending = false,
+                        error = browser.exceptionOrNull()?.message ?: "Could not open browser") }
+                    return@onSuccess
                 }
                 pollBrowserSignIn(pending)
             }

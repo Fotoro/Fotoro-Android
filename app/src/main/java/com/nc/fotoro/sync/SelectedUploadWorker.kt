@@ -23,6 +23,7 @@ import kotlinx.coroutines.ensureActive
 
 /** Explicit file offload is serialized by SyncScheduler's work chain and survives process death. */
 class SelectedUploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    private class UnreadableSelection(message: String) : IOException(message)
     private val api = FotoroApi(SecureStore(context))
     private val catalog = MediaCatalog(context)
     private val settings = context.getSharedPreferences("fotoro_sync", Context.MODE_PRIVATE)
@@ -36,7 +37,7 @@ class SelectedUploadWorker(context: Context, params: WorkerParameters) : Corouti
             notifications.createNotificationChannel(NotificationChannel(channel, "Selected file uploads", NotificationManager.IMPORTANCE_LOW))
             setForeground(note("Preparing selected file", 0))
             val (name, size) = metadata(uri)
-            if (size <= 0) throw IOException("Selected file has no readable size")
+            if (size <= 0) throw UnreadableSelection("Selected file has no readable size")
             val sha = catalog.sha256(LocalAsset(0, uri, "", name, "", size, 0, false))
             val mime = applicationContext.contentResolver.getType(uri) ?: "application/octet-stream"
             val asset = LocalAsset(0, uri, "picked:$sha", name, mime, size, 0, mime.startsWith("video/"))
@@ -71,7 +72,8 @@ class SelectedUploadWorker(context: Context, params: WorkerParameters) : Corouti
             Result.success()
         } catch (error: Exception) {
             setProgress(workDataOf("error" to (error.message ?: "Selected file upload paused")))
-            if (error is ApiFailure && error.status in 400..499 && error.status !in listOf(408, 429)) Result.failure()
+            if (error is SecurityException || error is java.io.FileNotFoundException || error is UnreadableSelection ||
+                error is ApiFailure && error.status in 400..499 && error.status !in listOf(408, 429)) Result.failure()
             else Result.retry()
         }
     }
