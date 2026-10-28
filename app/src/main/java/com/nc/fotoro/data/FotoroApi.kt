@@ -1,6 +1,7 @@
 package com.nc.fotoro.data
 
 import android.os.Build
+import android.net.Uri
 import com.nc.fotoro.BuildConfig
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -118,6 +119,34 @@ class FotoroApi(private val store: SecureStore) {
         val server = store.server ?: throw ApiFailure(401, "Pair this phone first")
         return request("GET", "${server.url}/api/v1/media?page=$page&limit=100", bearer = server.deviceToken)
     }
+
+    private suspend fun ownerGet(path: String): JSONObject {
+        val server = store.server ?: throw ApiFailure(401, "Pair this phone first")
+        return request("GET", server.url + path, bearer = validAccountToken())
+    }
+
+    private suspend fun ownerPost(path: String, body: JSONObject = JSONObject()): JSONObject {
+        val server = store.server ?: throw ApiFailure(401, "Pair this phone first")
+        return request("POST", server.url + path, body, validAccountToken())
+    }
+
+    suspend fun dashboardMetrics() = ownerGet("/api/stats")
+    suspend fun linkedDevices() = ownerGet("/devices")
+    suspend fun storageStatus() = ownerGet("/api/v1/storage")
+    suspend fun syncStorage() = ownerPost("/api/v1/storage/sync")
+    suspend fun verifyStorage() = ownerPost("/api/v1/storage/verify")
+    suspend fun diagnostics() = ownerGet("/api/v1/diagnostics")
+    suspend fun processingSchedule() = ownerGet("/api/scheduler/config")
+    suspend fun updateProcessingSchedule(enabled: Boolean) =
+        ownerPost("/api/scheduler/config", JSONObject().put("enabled", enabled))
+    suspend fun search(query: String) = ownerGet("/api/search?q=${Uri.encode(query)}")
+    suspend fun mediaItem(id: String): JSONObject {
+        val server = store.server ?: throw ApiFailure(401, "Pair this phone first")
+        return request("GET", "${server.url}/api/v1/media/${Uri.encode(id)}", bearer = server.deviceToken)
+    }
+
+    suspend fun pairingInvitation(): JSONObject =
+        request("POST", "$website/api/pairing", JSONObject(), validAccountToken())
 
     suspend fun testServer(): Boolean = try {
         val server = store.server ?: return false

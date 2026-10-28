@@ -8,18 +8,30 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.nc.fotoro.data.AccountSession
+import com.nc.fotoro.data.BackupStatus
+import com.nc.fotoro.data.DashboardMetrics
 import com.nc.fotoro.data.FotoroApi
+import com.nc.fotoro.data.LinkedDevice
 import com.nc.fotoro.data.LocalAsset
 import com.nc.fotoro.data.MediaCatalog
 import com.nc.fotoro.data.PairedServer
 import com.nc.fotoro.data.SecureStore
 import com.nc.fotoro.data.ServerAsset
+import com.nc.fotoro.data.ServerDiagnostics
+import com.nc.fotoro.data.ProcessingSchedule
+import com.nc.fotoro.data.SearchHit
+import com.nc.fotoro.data.toBackupStatus
+import com.nc.fotoro.data.toDashboardMetrics
+import com.nc.fotoro.data.toLinkedDevice
+import com.nc.fotoro.data.toProcessingSchedule
+import com.nc.fotoro.data.toServerDiagnostics
 import com.nc.fotoro.data.toServerAsset
 import com.nc.fotoro.sync.SyncScheduler
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 data class AppUiState(
     val booting: Boolean = true,
@@ -43,6 +55,20 @@ data class AppUiState(
     val backedUp: Int = 0,
     val primaryOnly: Int = 0,
     val lastSync: Long = 0,
+    val metrics: DashboardMetrics? = null,
+    val metricsCached: Boolean = false,
+    val devices: List<LinkedDevice> = emptyList(),
+    val storage: BackupStatus? = null,
+    val diagnostics: ServerDiagnostics? = null,
+    val schedule: ProcessingSchedule? = null,
+    val dashboardLoading: Boolean = false,
+    val searchQuery: String = "",
+    val searchHits: List<SearchHit> = emptyList(),
+    val searchLoading: Boolean = false,
+    val searchToken: String = "",
+    val searchedAsset: ServerAsset? = null,
+    val pairingPayload: String = "",
+    val pairingExpiresAt: String = "",
     val error: String? = null,
 )
 
@@ -76,11 +102,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val wifi = prefs.getBoolean("wifi_only", true)
         _state.update { it.copy(account = store.account, server = store.server,
             mediaGranted = catalog.hasAccess(), autoSync = auto, wifiOnly = wifi, booting = false) }
+        prefs.getString("dashboard_metrics", null)?.let { saved ->
+            runCatching { JSONObject(saved).toDashboardMetrics() }.onSuccess { metrics ->
+                _state.update { it.copy(metrics = metrics, metricsCached = true) }
+            }
+        }
         loadSummary()
         if (store.account != null) viewModelScope.launch {
             runCatching { api.validAccountToken() }.onFailure { _state.update { it.copy(error = "Sign in again to renew your session") } }
         }
-        if (store.server != null) { checkServer(); loadRemote() }
+        if (store.server != null) { checkServer(); loadRemote(); refreshDashboard() }
         if (catalog.hasAccess()) refreshMedia()
         if (store.server != null && catalog.hasAccess()) SyncScheduler.scheduleAuto(application, auto, wifi)
     }
@@ -91,7 +122,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             .onSuccess { account ->
                 if (store.server != null && state.value.account?.userId != account.userId) store.server = null
                 _state.update { it.copy(account = account, server = store.server, busy = false) }
-                if (store.server != null) { checkServer(); loadRemote() }
+                if (store.server != null) { checkServer(); loadRemote(); refreshDashboard() }
             }
             .onFailure { error -> _state.update { it.copy(busy = false, error = error.message ?: "Sign-in failed") } }
     }
@@ -102,6 +133,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             .onSuccess { server ->
                 _state.update { it.copy(server = server, serverOnline = true, busy = false) }
                 loadRemote()
+                refreshDashboard()
                 SyncScheduler.scheduleAuto(getApplication(), state.value.autoSync, state.value.wifiOnly)
                 if (state.value.mediaGranted && state.value.autoSync) SyncScheduler.syncNow(getApplication(), state.value.wifiOnly)
             }
@@ -112,6 +144,92 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val online = api.testServer()
         _state.update { it.copy(serverOnline = online) }
     }
+
+    fun refreshDashboard() = viewModelScope.launch {
+        if (store.server == null || state.value.dashboardLoading) return@launch
+        _state.update { it.copy(dashboardLoading = true) }
+        runCatching { api.validAccountToken() }.onFailure { error ->
+            _state.update { it.copy(dashboardLoading = false, error = error.message ?: "Sign in again") }
+            return@launch
+        }
+        runCatching { api.dashboardMetrics() }.onSuccess { response ->
+            prefs.edit().putString("dashboard_metrics", response.toString()).apply()
+            _state.update { it.copy(metrics = response.toDashboardMetrics(), metricsCached = false, serverOnline = true) }
+        }.onFailure { error ->
+            _state.update { it.copy(serverOnline = false, error = error.message ?: "Could not load dashboard") }
+        }
+        runCatching { api.linkedDevices().optJSONArray("devices") }.onSuccess { list ->
+            val devices = (0 until (list?.length() ?: 0)).map { list!!.getJSONObject(it).toLinkedDevice() }
+            _state.update { it.copy(devices = devices) }
+        }
+        runCatching { api.storageStatus().toBackupStatus() }.onSuccess { storage ->
+            _state.update { it.copy(storage = storage) }
+        }
+        runCatching { api.diagnostics().toServerDiagnostics() }.onSuccess { diagnostics ->
+            _state.update { it.copy(diagnostics = diagnostics) }
+        }
+        runCatching { api.processingSchedule().toProcessingSchedule() }.onSuccess { schedule ->
+            _state.update { it.copy(schedule = schedule) }
+        }
+        _state.update { it.copy(dashboardLoading = false) }
+    }
+
+    fun setProcessingEnabled(enabled: Boolean) = viewModelScope.launch {
+        runCatching { api.updateProcessingSchedule(enabled); api.processingSchedule().toProcessingSchedule() }
+            .onSuccess { updated -> _state.update { it.copy(schedule = updated) } }
+            .onFailure { error -> _state.update { it.copy(error = error.message ?: "Could not update schedule") } }
+    }
+
+    fun syncServerStorage() = viewModelScope.launch {
+        _state.update { it.copy(busy = true) }
+        runCatching { api.syncStorage() }.onSuccess { response ->
+            _state.update { it.copy(storage = response.getJSONObject("storage").toBackupStatus()) }
+            refreshDashboard()
+        }.onFailure { error -> _state.update { it.copy(error = error.message ?: "Backup failed") } }
+        _state.update { it.copy(busy = false) }
+    }
+
+    fun verifyServerStorage() = viewModelScope.launch {
+        _state.update { it.copy(busy = true) }
+        runCatching { api.verifyStorage() }.onSuccess { response ->
+            _state.update { it.copy(storage = response.getJSONObject("storage").toBackupStatus()) }
+        }.onFailure { error -> _state.update { it.copy(error = error.message ?: "Verification failed") } }
+        _state.update { it.copy(busy = false) }
+    }
+
+    fun search(query: String) = viewModelScope.launch {
+        _state.update { it.copy(searchQuery = query, searchLoading = query.isNotBlank(), searchHits = emptyList()) }
+        if (query.isBlank()) return@launch
+        runCatching {
+            val token = api.validAccountToken()
+            val response = api.search(query).optJSONArray("results")
+            val server = requireNotNull(store.server)
+            val hits = (0 until (response?.length() ?: 0)).map { index ->
+                val row = response!!.getJSONObject(index)
+                SearchHit(row.optString("hash"), row.optString("caption"), row.optString("category"),
+                    row.optDouble("score"), server.url + row.optString("thumbnail"))
+            }.filter { it.hash.isNotBlank() }
+            token to hits
+        }.onSuccess { (token, hits) -> _state.update { it.copy(searchToken = token, searchHits = hits, searchLoading = false) } }
+            .onFailure { error -> _state.update { it.copy(searchLoading = false, error = error.message ?: "Search failed") } }
+    }
+
+    fun openSearchHit(hit: SearchHit) = viewModelScope.launch {
+        runCatching { api.mediaItem(hit.hash).toServerAsset(requireNotNull(store.server)) }
+            .onSuccess { asset -> _state.update { it.copy(searchedAsset = asset) } }
+            .onFailure { error -> _state.update { it.copy(error = error.message ?: "Could not open item") } }
+    }
+
+    fun closeSearchHit() { _state.update { it.copy(searchedAsset = null) } }
+
+    fun createPairingInvitation() = viewModelScope.launch {
+        runCatching { api.pairingInvitation() }.onSuccess { response ->
+            _state.update { it.copy(pairingPayload = response.optString("qr_payload"),
+                pairingExpiresAt = response.optString("expires_at")) }
+        }.onFailure { error -> _state.update { it.copy(error = error.message ?: "Could not create pairing code") } }
+    }
+
+    fun clearPairingInvitation() { _state.update { it.copy(pairingPayload = "", pairingExpiresAt = "") } }
 
     fun loadRemote(reset: Boolean = true) = viewModelScope.launch {
         val server = store.server ?: return@launch
