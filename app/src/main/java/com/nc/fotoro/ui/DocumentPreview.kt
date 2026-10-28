@@ -76,8 +76,13 @@ internal fun DocumentPreview(asset: ServerAsset, state: AppUiState, model: AppVi
             }
         } else {
             Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                Text(previewError ?: if (file != null) "Open this document in another app" else "Preparing document…",
-                    color = Muted, modifier = Modifier.padding(24.dp))
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(previewError ?: if (file != null) "Open this document in another app" else "Document unavailable",
+                        color = Muted, modifier = Modifier.padding(24.dp))
+                    if (file == null && !state.documentLoading) {
+                        Button(onClick = { model.loadDocument(asset) }) { Text("Retry download") }
+                    }
+                }
             }
         }
         if (file != null) {
