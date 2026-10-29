@@ -56,7 +56,14 @@ class FotoroApi(private val store: SecureStore) {
     }
 
     suspend fun startBrowserSignIn(): Pair<PendingBrowserSignIn, String> {
-        val response = request("POST", "$website/api/auth/mobile-handoff", JSONObject())
+        val response = try {
+            request("POST", "$website/api/mobile-handoff", JSONObject())
+        } catch (error: ApiFailure) {
+            if (error.status == 400 || error.status == 404) {
+                throw ApiFailure(error.status, "Browser sign-in is not available on the live website yet. Deploy the latest Fotoro site, then try again.")
+            }
+            throw error
+        }
         val state = response.getString("state")
         val loginUrl = response.getString("login_url")
         require(state.matches(Regex("[a-f0-9]{64}")) &&
@@ -69,7 +76,7 @@ class FotoroApi(private val store: SecureStore) {
     }
 
     suspend fun pollBrowserSignIn(state: String): AccountSession? {
-        val response = request("GET", "$website/api/auth/mobile-handoff?state=${Uri.encode(state)}")
+        val response = request("GET", "$website/api/mobile-handoff?state=${Uri.encode(state)}")
         if (response.optString("status") != "complete") return null
         val access = response.getString("access_token")
         val payload = String(Base64.decode(access.split('.')[1], Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP))

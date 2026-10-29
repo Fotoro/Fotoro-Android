@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.content.Intent
 import android.net.Uri
+import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
@@ -19,12 +20,15 @@ import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.NoCredentialException
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import androidx.lifecycle.lifecycleScope
 import com.nc.fotoro.ui.FotoroApp
 import com.nc.fotoro.ui.theme.FotoroAndroidTheme
 import kotlinx.coroutines.launch
+import java.security.MessageDigest
 
 class MainActivity : ComponentActivity() {
     private val model: AppViewModel by viewModels()
@@ -109,11 +113,25 @@ class MainActivity : ComponentActivity() {
                 }?.let { GoogleIdTokenCredential.createFrom(it.data) }
                     ?: error("Google did not return an ID token")
                 model.signIn(google.idToken)
+            } catch (_: GetCredentialCancellationException) {
+                model.reportError("Google sign-in was cancelled.")
             } catch (_: NoCredentialException) {
-                model.reportError("No Google account is available on this phone. Add one in Android settings and try again.")
+                model.reportError("No usable Google account was found. Check the account in Android settings and try again.")
+            } catch (error: GetCredentialException) {
+                val fingerprint = installedSigningSha1()
+                model.reportError("Google sign-in failed (${error.javaClass.simpleName}). " +
+                    "Check the Android OAuth client: package $packageName, installed APK SHA-1 $fingerprint. " +
+                    "${error.message.orEmpty().take(180)}")
             } catch (error: Exception) {
                 model.reportError(error.message ?: "Google sign-in was cancelled")
             }
         }
     }
+
+    private fun installedSigningSha1(): String = runCatching {
+        val info = packageManager.getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+        val signer = info.signingInfo?.apkContentsSigners?.firstOrNull() ?: return@runCatching "unknown"
+        MessageDigest.getInstance("SHA-1").digest(signer.toByteArray())
+            .joinToString(":") { "%02X".format(it) }
+    }.getOrDefault("unknown")
 }

@@ -24,7 +24,9 @@ The app also shows the web dashboard's measured storage, device list, processing
 
 For the debug certificate SHA-1, run `./gradlew signingReport` and find the `debug` variant. A Google sign-in error before the website request usually means the Android OAuth client or SHA-1 is missing.
 
-If Google Credential Manager reports an account reauth error, use **Continue in browser** on the sign-in screen. The website completes OAuth and the app polls a short-lived, one-time handoff. This requires the website deployment containing `/api/auth/mobile-handoff` and the existing `cli_auth_sessions` Supabase table. Expired Supabase sessions also return to the sign-in screen; reconnecting with the same account preserves the phone's server pairing.
+If Google Credential Manager reports an account reauth error, first verify that the Google Cloud project has an **Android OAuth client** for package `com.nc.fotoro` and the SHA-1 of the APK installed on your phone. For the debug APK built in this repository on this workstation, the SHA-1 is `E4:E2:44:C3:95:BB:97:9E:40:5E:EA:FD:44:1C:BD:99:55:4E:52:45`. The Android client must live in the same Google Cloud project as the Web client used in `FOTORO_GOOGLE_WEB_CLIENT_ID`. A release APK needs its own signing certificate fingerprint. You do not need a separate Play Console listing just to test sign-in.
+
+**Continue in browser** uses the website's Google OAuth flow and a short-lived, one-time handoff. It requires the live website deployment containing `/api/mobile-handoff` and the existing `cli_auth_sessions` Supabase table. A Git push alone is not proof that Vercel deployed the site. Expired Supabase sessions return to the sign-in screen; reconnecting with the same account preserves the phone's server pairing.
 
 The `release` build currently produces an unsigned APK. Configure a release signing key and register its SHA-1 with the Android OAuth client before distribution.
 
