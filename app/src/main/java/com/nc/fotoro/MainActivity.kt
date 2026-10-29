@@ -24,6 +24,7 @@ import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import androidx.lifecycle.lifecycleScope
 import com.nc.fotoro.ui.FotoroApp
 import com.nc.fotoro.ui.theme.FotoroAndroidTheme
@@ -67,6 +68,11 @@ class MainActivity : ComponentActivity() {
                         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                     } },
                     onPickFiles = { selectedFiles.launch(arrayOf("*/*")) },
+                    onScanPairingQr = { GmsBarcodeScanning.getClient(this).startScan()
+                        .addOnSuccessListener { result -> result.rawValue?.let(model::pairFromQr)
+                            ?: model.reportError("QR code is empty") }
+                        .addOnFailureListener { error -> model.reportError(error.message ?: "Could not scan QR code") }
+                    },
                     onMediaPermission = {
                         val permissions = if (Build.VERSION.SDK_INT >= 34) arrayOf(
                             Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO,

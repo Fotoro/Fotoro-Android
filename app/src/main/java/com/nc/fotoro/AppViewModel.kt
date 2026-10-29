@@ -218,6 +218,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             .onFailure { error -> _state.update { it.copy(busy = false) }; reportAccountFailure(error, "Pairing failed") }
     }
 
+    fun pairFromQr(payload: String) = viewModelScope.launch {
+        _state.update { it.copy(busy = true, error = null) }
+        runCatching { api.pairFromQr(payload) }
+            .onSuccess { server ->
+                _state.update { it.copy(server = server, serverOnline = true, busy = false) }
+                loadRemote()
+                refreshDashboard()
+                SyncScheduler.scheduleAuto(getApplication(), state.value.autoSync, state.value.wifiOnly)
+                if (state.value.mediaGranted && state.value.autoSync) SyncScheduler.syncNow(getApplication(), state.value.wifiOnly)
+            }
+            .onFailure { error -> _state.update { it.copy(busy = false) }; reportAccountFailure(error, "QR pairing failed") }
+    }
+
     fun checkServer() = viewModelScope.launch {
         val online = api.testServer()
         _state.update { it.copy(serverOnline = online) }

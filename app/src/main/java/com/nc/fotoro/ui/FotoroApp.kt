@@ -98,7 +98,7 @@ import java.time.format.DateTimeFormatter
 @Composable
 fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onBrowserSignIn: () -> Unit,
               onMediaPermission: () -> Unit,
-              onPickFiles: () -> Unit) {
+              onPickFiles: () -> Unit, onScanPairingQr: () -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
     var splash by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) { delay(800); splash = false }
@@ -106,7 +106,7 @@ fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onBrowserSignIn: 
         when {
             splash || state.booting -> Splash()
             state.account == null || state.reauthRequired -> AuthScreen(state, onGoogleSignIn, onBrowserSignIn)
-            state.server == null -> PairScreen(state, model::pair)
+            state.server == null -> PairScreen(state, model::pair, onScanPairingQr)
             else -> Home(state, model, onMediaPermission, onPickFiles)
         }
         state.error?.let { message ->
@@ -213,7 +213,7 @@ private fun AuthScreen(state: AppUiState, signIn: () -> Unit, browserSignIn: () 
 }
 
 @Composable
-private fun PairScreen(state: AppUiState, pair: () -> Unit) {
+private fun PairScreen(state: AppUiState, pair: () -> Unit, scanQr: () -> Unit) {
     val context = LocalContext.current
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(26.dp)) {
         BrandHeader()
@@ -232,6 +232,8 @@ private fun PairScreen(state: AppUiState, pair: () -> Unit) {
         StepCard("03", "Pair securely", "We create a short-lived pairing code and exchange it for this phone's own key.")
         Spacer(Modifier.height(28.dp))
         PrimaryButton("Pair this phone", pair, state.busy)
+        Spacer(Modifier.height(12.dp))
+        PrimaryButton("Scan QR from Devices", scanQr, state.busy)
         Spacer(Modifier.height(12.dp))
         Text("Get Tailscale for Android ↗", color = Coral, modifier = Modifier.clickable {
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://tailscale.com/download/android")))

@@ -18,6 +18,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import org.json.JSONArray
 
 class ApiFailure(val status: Int, message: String) : IOException(message)
 
@@ -114,18 +115,52 @@ class FotoroApi(private val store: SecureStore) {
     }
 
     suspend fun pair(): PairedServer {
-        val session = authorizedRequest("POST", "$website/api/pairing", JSONObject())
-        val url = session.getString("server_url").trimEnd('/')
+        val url = linkedServerUrl()
+        val session = authorizedRequest("POST", "$url/api/v1/pairing/sessions",
+            JSONObject().put("server_url", url), readTimeoutSeconds = 10)
+        return redeemPairing(session.getString("server_url"), session.getString("pairing_token"))
+    }
+
+    suspend fun pairFromQr(raw: String): PairedServer {
+        val payload = runCatching { JSONObject(raw) }.getOrElse { throw ApiFailure(400, "This is not a Fotoro pairing QR code") }
+        if (payload.optInt("version") != 1) throw ApiFailure(400, "Unsupported Fotoro pairing QR code")
+        return redeemPairing(payload.optString("server_url"), payload.optString("pairing_token"))
+    }
+
+    private suspend fun redeemPairing(serverUrl: String, pairingToken: String): PairedServer {
+        if (pairingToken.length < 32) throw ApiFailure(400, "Pairing code is incomplete or expired")
+        val url = serverUrl.trimEnd('/')
         require(url.startsWith("https://") && url.substringAfter("https://").substringBefore('/').endsWith(".ts.net")) {
             "Pairing returned an invalid private server URL"
         }
         val deviceId = store.server?.deviceId ?: java.util.UUID.randomUUID().toString()
         val result = request("POST", "$url/api/v1/pairing/redeem", JSONObject()
-            .put("pairing_token", session.getString("pairing_token"))
+            .put("pairing_token", pairingToken)
             .put("device_id", deviceId).put("device_name", "${Build.MANUFACTURER} ${Build.MODEL}".take(128))
             .put("platform", "android"))
         return PairedServer(url, result.getString("device_id"), result.getString("device_token"))
             .also { store.server = it }
+    }
+
+    private suspend fun linkedServerUrl(): String = withContext(Dispatchers.IO) {
+        val supabase = BuildConfig.FOTORO_SUPABASE_URL.trimEnd('/')
+        val anonKey = BuildConfig.FOTORO_SUPABASE_ANON_KEY
+        if (supabase.isBlank() || anonKey.isBlank()) throw ApiFailure(400, "Supabase configuration is missing")
+        val token = validAccountToken()
+        val url = "$supabase/rest/v1/nodes?select=public_url,tailnet_url&order=last_seen.desc&limit=1"
+        val call = Request.Builder().url(url).header("apikey", anonKey)
+            .header("Authorization", "Bearer $token").build()
+        client.newCall(call).execute().use { response ->
+            if (!response.isSuccessful) throw ApiFailure(response.code,
+                if (response.code == 401) "Account session expired. Sign in again" else "Could not find your linked server (${response.code})")
+            val rows = JSONArray(response.body?.string().orEmpty())
+            if (rows.length() == 0) throw ApiFailure(404, "No server is linked to this account. Run ./fotoro setup on your computer")
+            val node = rows.getJSONObject(0)
+            val candidate = node.optString("public_url").ifBlank { node.optString("tailnet_url") }.trimEnd('/')
+            if (!candidate.startsWith("https://") || !candidate.substringAfter("https://").substringBefore('/').endsWith(".ts.net"))
+                throw ApiFailure(400, "Your server needs a valid Tailscale URL. Run ./fotoro nodesync")
+            candidate
+        }
     }
 
     suspend fun deviceStatus(assets: org.json.JSONArray): org.json.JSONArray {
@@ -209,7 +244,7 @@ class FotoroApi(private val store: SecureStore) {
     }
 
     suspend fun pairingInvitation(): JSONObject =
-        authorizedRequest("POST", "$website/api/pairing", JSONObject())
+        ownerPost("/api/v1/pairing/sessions", JSONObject().put("server_url", store.server?.url))
 
     private fun mediaRequest(asset: ServerAsset): Request {
         val server = store.server ?: throw ApiFailure(401, "Pair this phone first")
