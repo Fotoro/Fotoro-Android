@@ -115,7 +115,7 @@ class FotoroApi(private val store: SecureStore) {
     }
 
     suspend fun pair(): PairedServer {
-        val url = linkedServerUrl()
+        val url = linkedServerUrls().first()
         val session = authorizedRequest("POST", "$url/api/v1/pairing/sessions",
             JSONObject().put("server_url", url), readTimeoutSeconds = 10)
         return redeemPairing(session.getString("server_url"), session.getString("pairing_token"))
@@ -124,7 +124,9 @@ class FotoroApi(private val store: SecureStore) {
     suspend fun pairFromQr(raw: String): PairedServer {
         val payload = runCatching { JSONObject(raw) }.getOrElse { throw ApiFailure(400, "This is not a Fotoro pairing QR code") }
         if (payload.optInt("version") != 1) throw ApiFailure(400, "Unsupported Fotoro pairing QR code")
-        return redeemPairing(payload.optString("server_url"), payload.optString("pairing_token"))
+        val url = payload.optString("server_url").trimEnd('/')
+        if (url !in linkedServerUrls()) throw ApiFailure(403, "This QR code is not for the server linked to your account")
+        return redeemPairing(url, payload.optString("pairing_token"))
     }
 
     private suspend fun redeemPairing(serverUrl: String, pairingToken: String): PairedServer {
@@ -142,7 +144,7 @@ class FotoroApi(private val store: SecureStore) {
             .also { store.server = it }
     }
 
-    private suspend fun linkedServerUrl(): String = withContext(Dispatchers.IO) {
+    private suspend fun linkedServerUrls(): List<String> = withContext(Dispatchers.IO) {
         val supabase = BuildConfig.FOTORO_SUPABASE_URL.trimEnd('/')
         val anonKey = BuildConfig.FOTORO_SUPABASE_ANON_KEY
         if (supabase.isBlank() || anonKey.isBlank()) throw ApiFailure(400, "Supabase configuration is missing")
@@ -156,10 +158,18 @@ class FotoroApi(private val store: SecureStore) {
             val rows = JSONArray(response.body?.string().orEmpty())
             if (rows.length() == 0) throw ApiFailure(404, "No server is linked to this account. Run ./fotoro setup on your computer")
             val node = rows.getJSONObject(0)
-            val candidate = node.optString("public_url").ifBlank { node.optString("tailnet_url") }.trimEnd('/')
-            if (!candidate.startsWith("https://") || !candidate.substringAfter("https://").substringBefore('/').endsWith(".ts.net"))
+            val candidates = listOf(node.optString("public_url"), node.optString("tailnet_url"))
+                .map { it.trimEnd('/') }.filter { it.isNotBlank() }.distinct()
+            val valid = candidates.filter { candidate ->
+                runCatching { java.net.URI(candidate) }.getOrNull()?.let { parsed ->
+                    parsed.scheme == "https" && parsed.host?.endsWith(".ts.net") == true &&
+                        parsed.userInfo == null && parsed.port == -1 &&
+                        (parsed.path == null || parsed.path.isEmpty()) && parsed.query == null && parsed.fragment == null
+                } == true
+            }
+            if (valid.isEmpty())
                 throw ApiFailure(400, "Your server needs a valid Tailscale URL. Run ./fotoro nodesync")
-            candidate
+            valid
         }
     }
 
