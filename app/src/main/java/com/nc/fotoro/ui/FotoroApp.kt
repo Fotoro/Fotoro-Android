@@ -394,7 +394,10 @@ private fun OverviewScreen(state: AppUiState, model: AppViewModel, modifier: Mod
         }
         Spacer(Modifier.height(28.dp))
         PrimaryButton(if (state.syncState == WorkInfo.State.RUNNING) "Backup in progress…" else "Back up now",
-            model::syncNow, state.syncState == WorkInfo.State.RUNNING)
+            model::syncNow, state.transfersPaused || state.syncState == WorkInfo.State.RUNNING)
+        Spacer(Modifier.height(10.dp))
+        PrimaryButton(if (state.transfersPaused) "Resume transfers" else "Stop transfers",
+            if (state.transfersPaused) model::resumeTransfers else model::stopTransfers)
         Text("Refresh server data ↻", color = Coral,
             modifier = Modifier.clickable { model.refreshDashboard() }.padding(vertical = 14.dp))
         Spacer(Modifier.height(30.dp))
@@ -609,6 +612,14 @@ private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modif
             }
             Switch(checked = state.wifiOnly, onCheckedChange = model::setWifiOnly)
         }
+        Spacer(Modifier.height(10.dp))
+        StepCard(if (state.transfersPaused) "Ⅱ" else "■",
+            if (state.transfersPaused) "Transfers stopped" else "Transfer control",
+            if (state.transfersPaused) "No automatic or selected files will upload until you resume."
+            else "Stop an active transfer and pause future uploads at any time.")
+        Spacer(Modifier.height(10.dp))
+        PrimaryButton(if (state.transfersPaused) "Resume transfers" else "Stop transfers",
+            if (state.transfersPaused) model::resumeTransfers else model::stopTransfers)
         Spacer(Modifier.height(14.dp))
         StepCard("✓", "${state.backedUp} with two verified copies", "Ready to offload from your phone when you choose.")
         Spacer(Modifier.height(10.dp))
@@ -628,9 +639,9 @@ private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modif
             Spacer(Modifier.height(22.dp))
         }
         PrimaryButton("Back up now", model::syncNow,
-            !state.mediaGranted || state.syncState == WorkInfo.State.RUNNING)
+            state.transfersPaused || !state.mediaGranted || state.syncState == WorkInfo.State.RUNNING)
         Spacer(Modifier.height(12.dp))
-        PrimaryButton("Choose files to offload", onPickFiles)
+        PrimaryButton("Choose files to offload", onPickFiles, state.transfersPaused)
         Text("Select photos, videos, or documents. Each original transfers in the background and shows progress in notifications.",
             color = Muted, style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(top = 10.dp))

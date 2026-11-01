@@ -53,6 +53,7 @@ data class AppUiState(
     val serverOnline: Boolean = false,
     val mediaGranted: Boolean = false,
     val autoSync: Boolean = true,
+    val transfersPaused: Boolean = false,
     val wifiOnly: Boolean = true,
     val media: List<LocalAsset> = emptyList(),
     val localTotal: Int = 0,
@@ -108,6 +109,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             ?: jobs.firstOrNull { it.state == WorkInfo.State.ENQUEUED }
             ?: jobs.lastOrNull()
         _state.update { it.copy(syncState = job?.state,
+            transfersPaused = SyncScheduler.isPaused(application),
             selectedUploadActive = job?.tags?.contains(SyncScheduler.SELECTED_TAG) == true,
             syncDone = job?.progress?.getInt("done", 0) ?: 0,
             syncTotal = job?.progress?.getInt("total", 0) ?: 0,
@@ -125,7 +127,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val auto = prefs.getBoolean("auto", true)
         val wifi = prefs.getBoolean("wifi_only", true)
         _state.update { it.copy(account = store.account, server = store.server,
-            mediaGranted = catalog.hasAccess(), autoSync = auto, wifiOnly = wifi, booting = false) }
+            mediaGranted = catalog.hasAccess(), autoSync = auto, wifiOnly = wifi,
+            transfersPaused = SyncScheduler.isPaused(application), booting = false) }
         prefs.getString("dashboard_metrics", null)?.let { saved ->
             runCatching { JSONObject(saved).toDashboardMetrics() }.onSuccess { metrics ->
                 _state.update { it.copy(metrics = metrics, metricsCached = true) }
@@ -237,6 +240,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onForeground() {
+        _state.update { it.copy(transfersPaused = SyncScheduler.isPaused(getApplication())) }
         if (store.server == null) return
         checkServer()
         if (System.currentTimeMillis() - lastDashboardRefresh > 45_000) refreshDashboard()
@@ -424,20 +428,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun syncOnNewMedia() {
-        if (state.value.autoSync && store.server != null && catalog.hasAccess()) {
+        if (state.value.autoSync && !state.value.transfersPaused && store.server != null && catalog.hasAccess()) {
             refreshMedia()
             SyncScheduler.syncNow(getApplication(), state.value.wifiOnly)
         }
     }
 
     fun syncNow() {
+        if (SyncScheduler.isPaused(getApplication())) { reportError("Resume transfers before starting a backup"); return }
         _state.update { it.copy(error = null) }
         SyncScheduler.syncNow(getApplication())
     }
 
     fun uploadSelectedFiles(uris: List<Uri>) {
         if (store.server == null) { reportError("Pair this phone to your server first"); return }
+        if (SyncScheduler.isPaused(getApplication())) { reportError("Resume transfers before offloading files"); return }
         uris.forEach { SyncScheduler.uploadSelected(getApplication(), it) }
+    }
+
+    fun stopTransfers() {
+        SyncScheduler.stop(getApplication())
+        _state.update { it.copy(transfersPaused = true, error = null) }
+    }
+
+    fun resumeTransfers() {
+        val context = getApplication<Application>()
+        SyncScheduler.resume(context, state.value.autoSync && store.server != null && catalog.hasAccess(), state.value.wifiOnly)
+        _state.update { it.copy(transfersPaused = false, error = null) }
+        if (store.server != null && catalog.hasAccess()) SyncScheduler.syncNow(context, state.value.wifiOnly)
     }
 
     fun signOut() {

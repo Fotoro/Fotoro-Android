@@ -79,9 +79,11 @@ class MediaCatalog(private val context: Context) {
                 val contentUri = ContentUris.withAppendedId(
                     if (video) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
                 val modified = cursor.getLong(modifiedColumn)
+                val taken = cursor.getLong(takenColumn).takeIf { it > 0 }
+                    ?: (modified.takeIf { it > 0 } ?: cursor.getLong(addedColumn).takeIf { it > 0 } ?: 0L) * 1000
                 result += LocalAsset(id, contentUri, "android:$id:$size:$modified",
                     cursor.getString(nameColumn) ?: "media-$id", cursor.getString(mimeColumn) ?: if (video) "video/mp4" else "image/jpeg",
-                    size, cursor.getLong(takenColumn).takeIf { it > 0 } ?: cursor.getLong(addedColumn) * 1000, video)
+                    size, taken, video)
             }
         }
         result

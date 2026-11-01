@@ -14,11 +14,17 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import org.json.JSONArray
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 class ApiFailure(val status: Int, message: String) : IOException(message)
 
@@ -31,7 +37,7 @@ class FotoroApi(private val store: SecureStore) {
     private val website = "https://fotoro.vercel.app"
 
     private suspend fun request(method: String, url: String, body: JSONObject? = null, bearer: String? = null,
-                                extraHeaders: Map<String, String> = emptyMap(), readTimeoutSeconds: Long = 60): JSONObject = withContext(Dispatchers.IO) {
+                                extraHeaders: Map<String, String> = emptyMap(), readTimeoutSeconds: Long = 60): JSONObject {
         val builder = Request.Builder().url(url)
         bearer?.let { builder.header("Authorization", "Bearer $it") }
         extraHeaders.forEach { (key, value) -> builder.header(key, value) }
@@ -39,11 +45,28 @@ class FotoroApi(private val store: SecureStore) {
         builder.method(method, requestBody)
         val callClient = if (readTimeoutSeconds == 60L) client
             else client.newBuilder().readTimeout(readTimeoutSeconds, TimeUnit.SECONDS).build()
-        callClient.newCall(builder.build()).execute().use { response ->
-            val raw = response.body?.string().orEmpty()
-            val data = runCatching { JSONObject(raw) }.getOrDefault(JSONObject())
-            if (!response.isSuccessful) throw ApiFailure(response.code, data.optString("error", "Request failed (${response.code})"))
-            data
+        return suspendCancellableCoroutine { continuation ->
+            val call = callClient.newCall(builder.build())
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (continuation.isActive) continuation.resumeWithException(e)
+                }
+                override fun onResponse(call: Call, response: Response) {
+                    response.use {
+                        if (!continuation.isActive) return
+                        try {
+                            val raw = response.body?.string().orEmpty()
+                            val data = runCatching { JSONObject(raw) }.getOrDefault(JSONObject())
+                            if (!response.isSuccessful) throw ApiFailure(response.code,
+                                data.optString("error", "Request failed (${response.code})"))
+                            continuation.resume(data)
+                        } catch (error: Exception) {
+                            if (continuation.isActive) continuation.resumeWithException(error)
+                        }
+                    }
+                }
+            })
         }
     }
 
@@ -181,10 +204,12 @@ class FotoroApi(private val store: SecureStore) {
 
     suspend fun createUpload(asset: LocalAsset, sha256: String): String {
         val server = store.server ?: throw ApiFailure(401, "Pair this phone first")
-        return request("POST", "${server.url}/api/v1/uploads", JSONObject()
+        val body = JSONObject()
             .put("original_name", asset.name).put("mime_type", asset.mimeType)
             .put("size", asset.size).put("sha256", sha256).put("device_asset_id", asset.stableId)
-            .put("device_id", server.deviceId), server.deviceToken).getString("id")
+            .put("device_id", server.deviceId)
+        if (asset.capturedAtMillis > 0) body.put("captured_at", java.time.Instant.ofEpochMilli(asset.capturedAtMillis).toString())
+        return request("POST", "${server.url}/api/v1/uploads", body, server.deviceToken).getString("id")
     }
 
     suspend fun uploadOffset(id: String): Long {
@@ -196,14 +221,28 @@ class FotoroApi(private val store: SecureStore) {
         return upload.getLong("received_size")
     }
 
-    suspend fun appendChunk(id: String, offset: Long, bytes: ByteArray, length: Int) = withContext(Dispatchers.IO) {
+    suspend fun appendChunk(id: String, offset: Long, bytes: ByteArray, length: Int) {
         val server = store.server ?: throw ApiFailure(401, "Pair this phone first")
         val request = Request.Builder().url("${server.url}/api/v1/uploads/$id")
             .header("Authorization", "Bearer ${server.deviceToken}")
             .header("Upload-Offset", offset.toString())
             .patch(bytes.toRequestBody("application/octet-stream".toMediaType(), 0, length)).build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw ApiFailure(response.code, "Chunk upload failed (${response.code})")
+        suspendCancellableCoroutine<Unit> { continuation ->
+            val call = client.newCall(request)
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (continuation.isActive) continuation.resumeWithException(e)
+                }
+                override fun onResponse(call: Call, response: Response) {
+                    response.use {
+                        if (!continuation.isActive) return
+                        if (response.isSuccessful) continuation.resume(Unit)
+                        else continuation.resumeWithException(ApiFailure(response.code,
+                            "Chunk upload failed (${response.code})"))
+                    }
+                }
+            })
         }
     }
 

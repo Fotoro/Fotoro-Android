@@ -2,7 +2,10 @@ package com.nc.fotoro.sync
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -27,6 +30,7 @@ import com.nc.fotoro.data.SecureStore
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
@@ -37,25 +41,52 @@ object SyncScheduler {
     const val AUTO = "fotoro_auto_sync"
     const val SELECTED = "fotoro_selected_uploads"
     const val SELECTED_TAG = "fotoro_selected_upload"
+    const val ACTION_STOP = "com.nc.fotoro.STOP_TRANSFERS"
+    private const val PAUSED_KEY = "transfers_paused"
+    fun isPaused(context: Context): Boolean =
+        context.getSharedPreferences("fotoro_sync", Context.MODE_PRIVATE).getBoolean(PAUSED_KEY, false)
+    fun stop(context: Context) {
+        context.getSharedPreferences("fotoro_sync", Context.MODE_PRIVATE).edit().putBoolean(PAUSED_KEY, true).apply()
+        WorkManager.getInstance(context).apply {
+            cancelUniqueWork(MANUAL)
+            cancelUniqueWork(SELECTED)
+            cancelUniqueWork(AUTO)
+        }
+    }
+    fun resume(context: Context, autoSync: Boolean, wifiOnly: Boolean) {
+        context.getSharedPreferences("fotoro_sync", Context.MODE_PRIVATE).edit().putBoolean(PAUSED_KEY, false).apply()
+        scheduleAuto(context, autoSync, wifiOnly)
+    }
+    fun stopAction(context: Context): PendingIntent = PendingIntent.getBroadcast(context, 0,
+        Intent(context, TransferControlReceiver::class.java).setAction(ACTION_STOP),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     private fun constraints(wifiOnly: Boolean) = Constraints.Builder()
         .setRequiredNetworkType(if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
         .setRequiresBatteryNotLow(true).build()
     fun scheduleAuto(context: Context, enabled: Boolean, wifiOnly: Boolean = true) {
         val work = WorkManager.getInstance(context)
-        if (enabled) work.enqueueUniquePeriodicWork(AUTO, ExistingPeriodicWorkPolicy.UPDATE,
+        if (enabled && !isPaused(context)) work.enqueueUniquePeriodicWork(AUTO, ExistingPeriodicWorkPolicy.UPDATE,
             PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES).setConstraints(constraints(wifiOnly)).build())
         else work.cancelUniqueWork(AUTO)
     }
     fun syncNow(context: Context, wifiOnly: Boolean = false) {
+        if (isPaused(context)) return
         WorkManager.getInstance(context).enqueueUniqueWork(MANUAL, ExistingWorkPolicy.KEEP,
             OneTimeWorkRequestBuilder<SyncWorker>().setConstraints(constraints(wifiOnly)).build())
     }
     fun uploadSelected(context: Context, uri: Uri) {
+        if (isPaused(context)) return
         val request = OneTimeWorkRequestBuilder<SelectedUploadWorker>()
             .setInputData(workDataOf("uri" to uri.toString()))
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .addTag(SELECTED_TAG).build()
         WorkManager.getInstance(context).enqueueUniqueWork(SELECTED, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+    }
+}
+
+class TransferControlReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == SyncScheduler.ACTION_STOP) SyncScheduler.stop(context)
     }
 }
 
@@ -74,11 +105,12 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
     override suspend fun doWork(): Result = syncGate.withLock { runSync() }
 
     private suspend fun runSync(): Result {
-        if (store.server == null || !catalog.hasAccess()) return Result.success()
+        if (store.server == null || !catalog.hasAccess() || SyncScheduler.isPaused(applicationContext)) return Result.success()
         try {
             val generation = catalog.generation()
             val fullCheckAt = settings.getLong("last_full_check", 0)
             val unchanged = generation != null &&
+                settings.getBoolean("capture_dates_sent", false) &&
                 generation.first == settings.getString("media_version", null) &&
                 generation.second == settings.getLong("media_generation", -1) &&
                 System.currentTimeMillis() - fullCheckAt < 24 * 60 * 60_000L
@@ -99,8 +131,13 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             val awaitingSecondCopy = JSONArray()
             for (batch in all.chunked(200)) {
                 currentCoroutineContext().ensureActive()
+                if (SyncScheduler.isPaused(applicationContext)) return Result.success()
                 val query = JSONArray()
-                batch.forEach { query.put(JSONObject().put("device_asset_id", it.stableId).put("size", it.size)) }
+                batch.forEach { asset ->
+                    val item = JSONObject().put("device_asset_id", asset.stableId).put("size", asset.size)
+                    if (asset.capturedAtMillis > 0) item.put("captured_at", java.time.Instant.ofEpochMilli(asset.capturedAtMillis).toString())
+                    query.put(item)
+                }
                 val statuses = api.deviceStatus(query)
                 for (i in 0 until statuses.length()) {
                     val state = statuses.getJSONObject(i).optString("state")
@@ -116,6 +153,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             }
             for (asset in missing) {
                 currentCoroutineContext().ensureActive()
+                if (SyncScheduler.isPaused(applicationContext)) return Result.success()
                 if (System.currentTimeMillis() - started > 8 * 60_000) {
                     saveSummary(all.size, backedUp, pending, completed)
                     return Result.retry()
@@ -129,6 +167,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 } catch (_: java.io.FileNotFoundException) {
                     unavailable++
                     continue
+                } catch (cancel: CancellationException) {
+                    throw cancel
                 } catch (_: IllegalStateException) {
                     unavailable++
                     continue
@@ -144,6 +184,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 .putString("pending_assets", awaitingSecondCopy.toString())
                 .putString("media_version", generation?.first)
                 .putLong("media_generation", generation?.second ?: -1)
+                .putBoolean("capture_dates_sent", true)
                 .putLong("last_full_check", System.currentTimeMillis()).apply()
             notificationManager.notify(notificationId, NotificationCompat.Builder(applicationContext, channel)
                 .setSmallIcon(R.drawable.ic_launcher_foreground).setContentTitle("Fotoro backup up to date")
@@ -152,6 +193,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             return Result.success()
         } catch (_: SyncPause) {
             return Result.retry()
+        } catch (cancel: CancellationException) {
+            throw cancel
         } catch (error: Exception) {
             setProgress(workDataOf("error" to (error.message ?: "Sync paused")))
             return if (error is ApiFailure && error.status in 400..499 && error.status != 408 && error.status != 429) Result.failure()
@@ -214,6 +257,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val id = requireNotNull(uploadId)
         catalog.uploadChunks(asset, offset) { chunkOffset, bytes, length ->
             currentCoroutineContext().ensureActive()
+            if (SyncScheduler.isPaused(applicationContext)) throw CancellationException("Transfers stopped")
             if (System.currentTimeMillis() > deadline) throw SyncPause()
             api.appendChunk(id, chunkOffset, bytes, length)
             setProgress(workDataOf("bytes" to (chunkOffset + length), "size" to asset.size, "name" to asset.name))
@@ -232,7 +276,9 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val note = NotificationCompat.Builder(applicationContext, channel)
             .setSmallIcon(R.drawable.ic_launcher_foreground).setContentTitle("Fotoro · $title")
             .setContentText(if (total == 0) "Checking your library" else "$done of $total items transferred")
-            .setProgress(total, done, total == 0).setOngoing(true).setOnlyAlertOnce(true).build()
+            .setProgress(total, done, total == 0).setOngoing(true).setOnlyAlertOnce(true)
+            .addAction(android.R.drawable.ic_media_pause, "Stop transfers", SyncScheduler.stopAction(applicationContext))
+            .build()
         return ForegroundInfo(notificationId, note, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
     }
 }

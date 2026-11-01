@@ -20,6 +20,7 @@ import com.nc.fotoro.data.SecureStore
 import java.io.IOException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.CancellationException
 
 /** Explicit file offload is serialized by SyncScheduler's work chain and survives process death. */
 class SelectedUploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
@@ -32,6 +33,7 @@ class SelectedUploadWorker(context: Context, params: WorkerParameters) : Corouti
     private val notificationId = 9500
 
     override suspend fun doWork(): Result {
+        if (SyncScheduler.isPaused(applicationContext)) return Result.success()
         val uri = inputData.getString("uri")?.let(Uri::parse) ?: return Result.failure()
         return try {
             notifications.createNotificationChannel(NotificationChannel(channel, "Selected file uploads", NotificationManager.IMPORTANCE_LOW))
@@ -56,6 +58,7 @@ class SelectedUploadWorker(context: Context, params: WorkerParameters) : Corouti
             var lastPercent = -1
             catalog.uploadChunks(asset, offset) { chunkOffset, bytes, length ->
                 currentCoroutineContext().ensureActive()
+                if (SyncScheduler.isPaused(applicationContext)) throw CancellationException("Transfers stopped")
                 api.appendChunk(id, chunkOffset, bytes, length)
                 val percent = (((chunkOffset + length) * 100) / size).toInt().coerceIn(0, 100)
                 if (percent >= lastPercent + 2 || percent == 100) {
@@ -70,6 +73,8 @@ class SelectedUploadWorker(context: Context, params: WorkerParameters) : Corouti
                 .setSmallIcon(R.drawable.ic_launcher_foreground).setContentTitle("Fotoro · file saved")
                 .setContentText(name).setAutoCancel(true).build())
             Result.success()
+        } catch (cancel: CancellationException) {
+            throw cancel
         } catch (error: Exception) {
             setProgress(workDataOf("error" to (error.message ?: "Selected file upload paused")))
             if (error is SecurityException || error is java.io.FileNotFoundException || error is UnreadableSelection ||
@@ -95,7 +100,9 @@ class SelectedUploadWorker(context: Context, params: WorkerParameters) : Corouti
         val notification = NotificationCompat.Builder(applicationContext, channel)
             .setSmallIcon(R.drawable.ic_launcher_foreground).setContentTitle("Fotoro · $title")
             .setContentText(if (percent == 0) "Preparing original" else "$percent% transferred")
-            .setProgress(100, percent, percent == 0).setOngoing(true).setOnlyAlertOnce(true).build()
+            .setProgress(100, percent, percent == 0).setOngoing(true).setOnlyAlertOnce(true)
+            .addAction(android.R.drawable.ic_media_pause, "Stop transfers", SyncScheduler.stopAction(applicationContext))
+            .build()
         return ForegroundInfo(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
     }
 }
