@@ -28,13 +28,16 @@ If Google Credential Manager reports an account reauth error, first verify that 
 
 **Continue in browser** uses the website's Google OAuth flow and a short-lived, one-time handoff. It requires the live website deployment containing `/api/mobile-handoff` and the existing `cli_auth_sessions` Supabase table. A Git push alone is not proof that Vercel deployed the site. Expired Supabase sessions return to the sign-in screen; reconnecting with the same account preserves the phone's server pairing.
 
-The `release` build currently produces an unsigned APK. Configure a release signing key and register its SHA-1 with the Android OAuth client before distribution.
+The `release` build produces an unsigned APK unless you configure a release signing key. Register its SHA-1 with the Android OAuth client before using native Google sign-in. Browser sign-in remains available without an Android OAuth certificate.
+Keep the release signing keystore and its password safe: future app updates must use the same key to install over this version.
 
 ## How backup works
 
 - The server stays the source of truth. The app asks `/api/v1/device-assets/status` about up to 200 MediaStore assets at a time, and only hashes files the server says it needs. It uploads originals in 4 MiB chunks with the server's resumable upload API. An interrupted upload resumes from the server's reported byte offset. MediaStore generation tracking skips unchanged full scans; a full reconciliation still runs daily. Pending second-copy items are checked in bounded batches to avoid hammering the server.
 - WorkManager runs a periodic check when battery is not low and the selected network is available. Automatic backup defaults to unmetered Wi-Fi; users can allow mobile data in Backup settings. Android schedules periodic work at its discretion; 15 minutes is the requested interval, not a delivery guarantee. While the app is visible, a MediaStore observer queues another check after new media appears. Manual **Back up now** can use any connected network.
 - Transfers run off the UI thread and show progress in a foreground notification. Each run yields after eight minutes so Android can schedule later work. The server performs its own second-copy backup; the app reports **on server** and **two copies** separately.
+- **Stop transfers** in Home, Backup, or the active notification cancels queued and running uploads and pauses automatic backup across app restarts. **Resume transfers** restores the schedule and starts a new reconciliation. An interrupted original resumes from its saved server offset; stopping does not delete either copy.
+- Uploads send the media capture time from Android MediaStore. After updating the server, run `./fotoro fix-dates --dry-run` and `./fotoro fix-dates` once to repair the existing timeline from embedded metadata or preserved file times. The latter is an approximation when the file has no embedded capture date.
 - **Choose files to offload** uses Android's document picker. The app keeps read permission for selected URIs and queues each file in a serial WorkManager chain; progress and failures appear in notifications and the Backup screen. This is how documents are uploaded in v1. Automatic backup scans MediaStore photos and videos only.
 - Fotoro never deletes media from the phone. If Android grants access to selected photos only, it can back up only those selections. Background backup requires the phone's Tailscale VPN and home server to be reachable.
 
