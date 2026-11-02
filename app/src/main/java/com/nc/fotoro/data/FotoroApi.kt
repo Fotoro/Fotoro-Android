@@ -138,10 +138,15 @@ class FotoroApi(private val store: SecureStore) {
     }
 
     suspend fun pair(): PairedServer {
-        val url = linkedServerUrls().first()
-        val session = authorizedRequest("POST", "$url/api/v1/pairing/sessions",
-            JSONObject().put("server_url", url), readTimeoutSeconds = 10)
-        return redeemPairing(session.getString("server_url"), session.getString("pairing_token"))
+        // Create the short-lived session through Fotoro's authenticated relay.
+        // The phone can reach its Tailscale endpoint to redeem the returned token,
+        // but a cold/sleeping host may close a direct session-creation request.
+        val session = authorizedRequest("POST", "$website/api/pairing", JSONObject(), readTimeoutSeconds = 40)
+        val url = session.getString("server_url").trimEnd('/')
+        if (url !in linkedServerUrls()) {
+            throw ApiFailure(403, "The pairing session belongs to a different linked server")
+        }
+        return redeemPairing(url, session.getString("pairing_token"))
     }
 
     suspend fun pairFromQr(raw: String): PairedServer {
@@ -159,10 +164,16 @@ class FotoroApi(private val store: SecureStore) {
             "Pairing returned an invalid private server URL"
         }
         val deviceId = store.server?.deviceId ?: java.util.UUID.randomUUID().toString()
-        val result = request("POST", "$url/api/v1/pairing/redeem", JSONObject()
-            .put("pairing_token", pairingToken)
-            .put("device_id", deviceId).put("device_name", "${Build.MANUFACTURER} ${Build.MODEL}".take(128))
-            .put("platform", "android"))
+        val result = try {
+            request("POST", "$url/api/v1/pairing/redeem", JSONObject()
+                .put("pairing_token", pairingToken)
+                .put("device_id", deviceId).put("device_name", "${Build.MANUFACTURER} ${Build.MODEL}".take(128))
+                .put("platform", "android"), readTimeoutSeconds = 30)
+        } catch (error: ApiFailure) {
+            throw error
+        } catch (error: IOException) {
+            throw ApiFailure(503, "Pairing session was created, but this phone could not reach the server over Tailscale. Confirm Tailscale is connected on both devices and try again")
+        }
         return PairedServer(url, result.getString("device_id"), result.getString("device_token"))
             .also { store.server = it }
     }
