@@ -18,8 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -44,7 +43,6 @@ import com.nc.fotoro.AppUiState
 import com.nc.fotoro.AppViewModel
 import com.nc.fotoro.ui.theme.Coral
 import com.nc.fotoro.ui.theme.Cream
-import com.nc.fotoro.ui.theme.Ink
 import com.nc.fotoro.ui.theme.Line
 import com.nc.fotoro.ui.theme.Mint
 import com.nc.fotoro.ui.theme.Muted
@@ -69,9 +67,8 @@ private fun Page(title: String, subtitle: String, body: @Composable () -> Unit) 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(22.dp)) {
         Text("fotoro.", color = Cream, style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(30.dp))
-        Text(title.uppercase(), color = Coral, style = MaterialTheme.typography.labelMedium)
-        Spacer(Modifier.height(8.dp))
         Text(title, color = Cream, style = MaterialTheme.typography.headlineLarge)
+        Spacer(Modifier.height(8.dp))
         Text(subtitle, color = Muted, style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(24.dp))
         body()
@@ -87,15 +84,14 @@ private fun DataRow(title: String, value: String, detail: String = "") {
             Text(title, color = Cream, fontWeight = FontWeight.Medium)
             if (detail.isNotBlank()) Text(detail, color = Muted, style = MaterialTheme.typography.bodySmall)
         }
-        Text(value, color = Coral, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(value, color = Cream, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
 @Composable
 private fun Action(label: String, busy: Boolean = false, onClick: () -> Unit) {
-    Button(onClick = onClick, enabled = !busy, modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = Coral, contentColor = Ink)) {
-        if (busy) CircularProgressIndicator(Modifier.size(18.dp), color = Ink, strokeWidth = 2.dp)
+    OutlinedButton(onClick = onClick, enabled = !busy, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
+        if (busy) CircularProgressIndicator(Modifier.size(18.dp), color = Coral, strokeWidth = 2.dp)
         else Text(label)
     }
 }
@@ -113,13 +109,13 @@ internal fun DevicesScreen(state: AppUiState, model: AppViewModel) {
         Text("${state.devices.size} linked devices", color = Cream, style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(12.dp))
         state.devices.forEach { device ->
-            DataRow(device.name, device.status.uppercase(), "${device.platform} · ${device.items}" +
+            DataRow(device.name, device.status, "${device.platform} · ${device.items}" +
                 if (device.lastSeen.isNotBlank()) " · ${device.lastSeen.take(10)}" else "")
         }
         if (state.devices.isEmpty()) Text("No device data yet. Connect to your server and refresh.", color = Muted)
         Action("Refresh devices", state.dashboardLoading, model::refreshDashboard)
         Spacer(Modifier.height(30.dp))
-        Text("PAIR A NEW DEVICE", color = Coral, style = MaterialTheme.typography.labelMedium)
+        Text("Pair a new device", color = Muted, style = MaterialTheme.typography.labelMedium)
         Text("This invitation expires shortly. Only share it with a device you control.", color = Muted)
         Action("Create pairing QR", onClick = model::createPairingInvitation)
         if (state.pairingPayload.isNotBlank()) {
@@ -166,9 +162,9 @@ internal fun StorageScreen(state: AppUiState, model: AppViewModel) {
             DataRow("Upload staging", readableBytes(metrics.stagingBytes))
         } else Text("Connect to the server to measure storage.", color = Muted)
         Spacer(Modifier.height(22.dp))
-        Text("BACKUP HEALTH", color = Coral, style = MaterialTheme.typography.labelMedium)
+        Text("Backup health", color = Muted, style = MaterialTheme.typography.labelMedium)
         if (storage != null) {
-            DataRow("Second disk", if (storage.available) "AVAILABLE" else "UNAVAILABLE")
+            DataRow("Second disk", if (storage.available) "Available" else "Unavailable")
             DataRow("Verified copies", storage.verified.toString())
             DataRow("Waiting for copy", storage.pending.toString())
             DataRow("Primary not verified", storage.unverifiedPrimary.toString())
@@ -196,7 +192,7 @@ internal fun ProcessingScreen(state: AppUiState, model: AppViewModel) {
             DataRow("Failed analysis", metrics.queueFailed.toString())
         }
         Spacer(Modifier.height(20.dp))
-        Text("PROCESSING SCHEDULE", color = Coral, style = MaterialTheme.typography.labelMedium)
+        Text("Processing schedule", color = Muted, style = MaterialTheme.typography.labelMedium)
         if (schedule != null) {
             Row(Modifier.fillMaxWidth().background(Panel).padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Automatic processing", color = Cream, modifier = Modifier.weight(1f))
@@ -220,11 +216,11 @@ internal fun SettingsScreen(state: AppUiState, model: AppViewModel) {
         DataRow("Private server", state.server?.url?.removePrefix("https://").orEmpty())
         if (diagnostics != null) {
             Spacer(Modifier.height(18.dp))
-            Text("SYSTEM DIAGNOSTICS", color = Coral, style = MaterialTheme.typography.labelMedium)
+            Text("System diagnostics", color = Muted, style = MaterialTheme.typography.labelMedium)
             DataRow("Database", diagnostics.databaseCheck.ifBlank { "Unknown" }, "Schema ${diagnostics.schemaVersion}")
-            DataRow("Primary disk", if (diagnostics.primaryAvailable) "READY" else "UNAVAILABLE")
-            DataRow("Second disk", if (diagnostics.backupAvailable) "READY" else "UNAVAILABLE")
-            DataRow("Tailscale", if (diagnostics.tailscaleRunning) "CONNECTED" else "OFFLINE")
+            DataRow("Primary disk", if (diagnostics.primaryAvailable) "Ready" else "Unavailable")
+            DataRow("Second disk", if (diagnostics.backupAvailable) "Ready" else "Unavailable")
+            DataRow("Tailscale", if (diagnostics.tailscaleRunning) "Connected" else "Offline")
             DataRow("Search index", "${diagnostics.searchVectors} vectors", diagnostics.searchModel)
         }
         Action("Refresh diagnostics", state.dashboardLoading, model::refreshDashboard)

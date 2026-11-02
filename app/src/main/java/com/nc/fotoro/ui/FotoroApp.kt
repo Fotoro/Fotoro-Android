@@ -36,6 +36,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -136,31 +137,14 @@ private fun DotLogo(modifier: Modifier = Modifier, animated: Boolean = false) {
 }
 
 @Composable
-private fun DotBackdrop(modifier: Modifier = Modifier) {
-    Canvas(modifier) {
-        val step = 18.dp.toPx()
-        var x = 0f
-        while (x < size.width) {
-            var y = 0f
-            while (y < size.height) {
-                drawCircle(Coral.copy(alpha = .10f), 1.dp.toPx(), Offset(x, y))
-                y += step
-            }
-            x += step
-        }
-    }
-}
-
-@Composable
 private fun Splash() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        DotBackdrop(Modifier.fillMaxSize())
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             DotLogo(Modifier.size(104.dp), animated = true)
             Spacer(Modifier.height(24.dp))
             Text("fotoro.", style = MaterialTheme.typography.headlineLarge, color = Cream)
             Spacer(Modifier.height(12.dp))
-            Label("YOUR MOMENTS, YOUR PLACE")
+            Label("Your photos, your place")
         }
     }
 }
@@ -185,8 +169,7 @@ private fun AuthScreen(state: AppUiState, signIn: () -> Unit, browserSignIn: () 
         BrandHeader()
         Spacer(Modifier.height(76.dp))
         Box(Modifier.fillMaxWidth().height(190.dp)) {
-            DotBackdrop(Modifier.fillMaxSize())
-            Text("Every frame.\nBack home.", color = Cream, style = MaterialTheme.typography.displayLarge,
+            Text("Your photos.\nYour server.", color = Cream, style = MaterialTheme.typography.displayLarge,
                 modifier = Modifier.align(Alignment.CenterStart))
         }
         Spacer(Modifier.height(28.dp))
@@ -196,7 +179,7 @@ private fun AuthScreen(state: AppUiState, signIn: () -> Unit, browserSignIn: () 
         PrimaryButton(if (state.reauthRequired) "Reconnect with Google" else "Continue with Google", signIn, state.busy)
         Spacer(Modifier.height(10.dp))
         Text(if (state.browserSignInPending) "Waiting for browser sign-in…"
-            else "Google sign-in not working? Continue in browser ↗", color = Coral,
+            else "Continue in browser", color = Coral,
             modifier = Modifier.clickable(enabled = !state.busy && !state.browserSignInPending, onClick = browserSignIn)
                 .padding(vertical = 12.dp))
         Spacer(Modifier.height(18.dp))
@@ -205,7 +188,7 @@ private fun AuthScreen(state: AppUiState, signIn: () -> Unit, browserSignIn: () 
         Spacer(Modifier.height(45.dp))
         HorizontalDivider(color = Line)
         Spacer(Modifier.height(18.dp))
-        Label("PRIVATE BY DESIGN", Mint)
+        Label("Private by design", Mint)
         Spacer(Modifier.height(8.dp))
         Text("Originals travel directly between this phone and your computer over your Tailscale network.",
             color = Muted, style = MaterialTheme.typography.bodyMedium)
@@ -218,9 +201,9 @@ private fun PairScreen(state: AppUiState, pair: () -> Unit, scanQr: () -> Unit) 
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(26.dp)) {
         BrandHeader()
         Spacer(Modifier.height(72.dp))
-        Label("02 / CONNECT YOUR SERVER")
+        Label("Connect your server")
         Spacer(Modifier.height(18.dp))
-        Text("Make the\nconnection.", color = Cream, style = MaterialTheme.typography.displayLarge)
+        Text("Pair this phone", color = Cream, style = MaterialTheme.typography.displayLarge)
         Spacer(Modifier.height(16.dp))
         Text("Your account is ready. Pair this phone to the server linked to ${state.account?.email.orEmpty()}.",
             color = Muted, style = MaterialTheme.typography.bodyLarge)
@@ -233,9 +216,9 @@ private fun PairScreen(state: AppUiState, pair: () -> Unit, scanQr: () -> Unit) 
         Spacer(Modifier.height(28.dp))
         PrimaryButton("Pair this phone", pair, state.busy)
         Spacer(Modifier.height(12.dp))
-        PrimaryButton("Scan QR from Devices", scanQr, state.busy)
+        SecondaryButton("Scan QR from Devices", scanQr, state.busy)
         Spacer(Modifier.height(12.dp))
-        Text("Get Tailscale for Android ↗", color = Coral, modifier = Modifier.clickable {
+        Text("Get Tailscale for Android", color = Coral, modifier = Modifier.clickable {
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://tailscale.com/download/android")))
         }.padding(vertical = 10.dp))
     }
@@ -259,16 +242,16 @@ private fun PermissionScreen(request: () -> Unit) {
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(26.dp)) {
         BrandHeader()
         Spacer(Modifier.height(75.dp))
-        Label("03 / YOUR LIBRARY")
+        Label("Choose media access")
         Spacer(Modifier.height(18.dp))
-        Text("Let the good\nstuff in.", color = Cream, style = MaterialTheme.typography.displayLarge)
+        Text("Choose what Fotoro can see", color = Cream, style = MaterialTheme.typography.displayLarge)
         Spacer(Modifier.height(16.dp))
         Text("Choose the photos and videos Fotoro can see. Full access enables automatic backup of new moments; selected access backs up only the items you choose.",
             color = Muted, style = MaterialTheme.typography.bodyLarge)
         Spacer(Modifier.height(42.dp))
-        StepCard("↗", "Only what you allow", "Fotoro reads your media to show it and send originals to your computer.")
+        StepCard("1", "Only what you allow", "Fotoro reads your media to show it and send originals to your computer.")
         Spacer(Modifier.height(10.dp))
-        StepCard("✓", "Your phone stays yours", "Upload never removes files from your device.")
+        StepCard("2", "Your phone stays yours", "Upload never removes files from your device.")
         Spacer(Modifier.height(30.dp))
         PrimaryButton("Choose photo access", request)
     }
@@ -280,7 +263,15 @@ private fun PrimaryButton(text: String, action: () -> Unit, busy: Boolean = fals
         colors = ButtonDefaults.buttonColors(containerColor = Coral, contentColor = Ink),
         shape = MaterialTheme.shapes.small) {
         if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Ink)
-        else Text(text, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        else Text(text, fontWeight = FontWeight.Medium, fontSize = 15.sp)
+    }
+}
+
+@Composable
+private fun SecondaryButton(text: String, action: () -> Unit, busy: Boolean = false) {
+    OutlinedButton(onClick = action, enabled = !busy, modifier = Modifier.fillMaxWidth().height(52.dp),
+        shape = MaterialTheme.shapes.small) {
+        Text(text, fontWeight = FontWeight.Medium, fontSize = 15.sp)
     }
 }
 
@@ -296,15 +287,15 @@ private fun Home(state: AppUiState, model: AppViewModel, onMediaPermission: () -
     var selectedRemote by remember { mutableIntStateOf(-1) }
     val shown = state.media.take(state.visibleCount)
     Scaffold(containerColor = Ink, bottomBar = {
-        Row(Modifier.fillMaxWidth().background(Panel).border(1.dp, Line).padding(vertical = 8.dp),
+        Row(Modifier.fillMaxWidth().background(Panel).border(1.dp, Line).padding(horizontal = 8.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceEvenly) {
             Tab.entries.forEach { item ->
-                Column(Modifier.weight(1f).clickable { tab = item }.padding(7.dp),
+                Column(Modifier.weight(1f).clickable { tab = item }.padding(horizontal = 4.dp, vertical = 6.dp),
                     horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(when (item) { Tab.Overview -> "◉"; Tab.Library -> "▦"; Tab.Backup -> "↥";
-                        Tab.Devices -> "◇"; Tab.More -> "•••" },
-                        color = if (tab == item) Coral else Muted, fontSize = 22.sp)
-                    Text(item.name, color = if (tab == item) Cream else Muted, fontSize = 11.sp)
+                    Box(Modifier.fillMaxWidth().height(2.dp)
+                        .background(if (tab == item) Coral else Color.Transparent))
+                    Spacer(Modifier.height(10.dp))
+                    Text(item.name, color = if (tab == item) Cream else Muted, fontSize = 12.sp)
                 }
             }
         }
@@ -318,7 +309,7 @@ private fun Home(state: AppUiState, model: AppViewModel, onMediaPermission: () -
             Tab.More -> Box(Modifier.padding(padding)) {
                 when (morePage) {
                     MorePage.Menu -> Column(Modifier.fillMaxSize().statusBarsPadding().padding(22.dp)) {
-                        BrandHeader(); Spacer(Modifier.height(30.dp)); Label("CONTROL ROOM")
+                        BrandHeader(); Spacer(Modifier.height(30.dp)); Label("Your server")
                         Text("More", color = Cream, style = MaterialTheme.typography.headlineLarge)
                         Spacer(Modifier.height(24.dp))
                         listOf(Triple("Storage", "Disk capacity and backup health", MorePage.Storage),
@@ -326,17 +317,17 @@ private fun Home(state: AppUiState, model: AppViewModel, onMediaPermission: () -
                             Triple("Settings", "Account and diagnostics", MorePage.Settings)).forEach { (label, detail, page) ->
                             Column(Modifier.fillMaxWidth().clickable { morePage = page }
                                 .background(Panel).border(1.dp, Line).padding(18.dp)) {
-                                Text("$label  ↗", color = Cream, fontWeight = FontWeight.SemiBold)
+                                Text(label, color = Cream, fontWeight = FontWeight.SemiBold)
                                 Text(detail, color = Muted)
                             }
                             Spacer(Modifier.height(10.dp))
                         }
                     }
-                    MorePage.Storage -> Box { StorageScreen(state, model); Text("‹ More", color = Coral,
+                    MorePage.Storage -> Box { StorageScreen(state, model); Text("Back to More", color = Coral,
                         modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().clickable { morePage = MorePage.Menu }.padding(16.dp)) }
-                    MorePage.Processing -> Box { ProcessingScreen(state, model); Text("‹ More", color = Coral,
+                    MorePage.Processing -> Box { ProcessingScreen(state, model); Text("Back to More", color = Coral,
                         modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().clickable { morePage = MorePage.Menu }.padding(16.dp)) }
-                    MorePage.Settings -> Box { SettingsScreen(state, model); Text("‹ More", color = Coral,
+                    MorePage.Settings -> Box { SettingsScreen(state, model); Text("Back to More", color = Coral,
                         modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().clickable { morePage = MorePage.Menu }.padding(16.dp)) }
                 }
             }
@@ -357,19 +348,18 @@ private fun OverviewScreen(state: AppUiState, model: AppViewModel, modifier: Mod
         Spacer(Modifier.height(12.dp))
         BrandHeader()
         Spacer(Modifier.height(36.dp))
-        Label("YOUR PRIVATE ARCHIVE")
+        Label("Your private archive")
         Spacer(Modifier.height(12.dp))
-        Text("Made of\nmoments.", color = Cream, style = MaterialTheme.typography.displayLarge)
+        Text("Your archive", color = Cream, style = MaterialTheme.typography.displayLarge)
         Spacer(Modifier.height(8.dp))
-        Text("Safe on your own terms.", color = Muted, style = MaterialTheme.typography.bodyLarge)
+        Text("Photos from your phone, stored on your server", color = Muted, style = MaterialTheme.typography.bodyLarge)
         Spacer(Modifier.height(28.dp))
         Box(Modifier.fillMaxWidth().background(Panel).border(1.dp, Line).padding(22.dp)) {
-            DotBackdrop(Modifier.fillMaxSize())
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(9.dp).background(if (state.serverOnline) Mint else Coral))
                     Spacer(Modifier.width(9.dp))
-                    Label(if (state.serverOnline) "SERVER CONNECTED" else "SERVER UNREACHABLE",
+                    Label(if (state.serverOnline) "Server connected" else "Server unreachable",
                         if (state.serverOnline) Mint else Coral)
                 }
                 Spacer(Modifier.height(18.dp))
@@ -378,32 +368,32 @@ private fun OverviewScreen(state: AppUiState, model: AppViewModel, modifier: Mod
                 Spacer(Modifier.height(12.dp))
                 Text(if (state.serverOnline) "Ready for the next backup." else "Start Fotoro and connect Tailscale, then refresh.",
                     color = Muted, style = MaterialTheme.typography.bodyMedium)
-                if (!state.serverOnline) Text("Check connection ↻", color = Coral,
+                if (!state.serverOnline) Text("Check connection", color = Coral,
                     modifier = Modifier.clickable { model.checkServer() }.padding(top = 14.dp))
             }
         }
         Spacer(Modifier.height(26.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            StatCard("${state.metrics?.total ?: state.remoteTotal}", "ON SERVER", Modifier.weight(1f))
-            StatCard("${state.metrics?.backupVerified ?: state.backedUp}", "TWO COPIES", Modifier.weight(1f))
+            StatCard("${state.metrics?.total ?: state.remoteTotal}", "On server", Modifier.weight(1f))
+            StatCard("${state.metrics?.backupVerified ?: state.backedUp}", "Two copies", Modifier.weight(1f))
         }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            StatCard(readableBytes(state.metrics?.mediaBytes ?: 0), "MEDIA USED", Modifier.weight(1f))
-            StatCard(if (state.autoSync) "ON" else "OFF", "AUTO BACKUP", Modifier.weight(1f))
+            StatCard(state.metrics?.let { readableBytes(it.mediaBytes) } ?: "—", "Media used", Modifier.weight(1f))
+            StatCard(state.metrics?.let { readableBytes(it.diskFreeBytes) } ?: "—", "Disk free", Modifier.weight(1f))
         }
         Spacer(Modifier.height(28.dp))
         PrimaryButton(if (state.syncState == WorkInfo.State.RUNNING) "Backup in progress…" else "Back up now",
             model::syncNow, state.transfersPaused || state.syncState == WorkInfo.State.RUNNING)
         Spacer(Modifier.height(10.dp))
-        PrimaryButton(if (state.transfersPaused) "Resume transfers" else "Stop transfers",
+        SecondaryButton(if (state.transfersPaused) "Resume transfers" else "Stop transfers",
             if (state.transfersPaused) model::resumeTransfers else model::stopTransfers)
-        Text("Refresh server data ↻", color = Coral,
+        Text("Refresh server data", color = Coral,
             modifier = Modifier.clickable { model.refreshDashboard() }.padding(vertical = 14.dp))
         Spacer(Modifier.height(30.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Recent frames", color = Cream, style = MaterialTheme.typography.titleLarge)
-            Text("See all ↗", color = Coral, modifier = Modifier.clickable(onClick = openLibrary))
+            Text("See all", color = Coral, modifier = Modifier.clickable(onClick = openLibrary))
         }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -456,7 +446,7 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
             Column(Modifier.statusBarsPadding().padding(22.dp)) {
                 BrandHeader()
                 Spacer(Modifier.height(26.dp))
-                Label("YOUR CAMERA ROLL")
+        Label("Your media")
                 Spacer(Modifier.height(8.dp))
                 Text("Library", color = Cream, style = MaterialTheme.typography.headlineLarge)
                 Spacer(Modifier.height(5.dp))
@@ -477,7 +467,7 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
                         label = { Text("Search your archive") }, singleLine = true,
                         modifier = Modifier.fillMaxWidth())
                     Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                        Text("Search ↗", color = Coral,
+                        Text("Search", color = Coral,
                             modifier = Modifier.clickable { model.search(searchText.trim()) }.padding(vertical = 10.dp))
                         if (state.searchQuery.isNotBlank()) Text("Clear", color = Muted,
                             modifier = Modifier.clickable { searchText = ""; model.search("") }.padding(vertical = 10.dp))
@@ -505,7 +495,7 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
             }
             if (shown.size == state.visibleCount && state.media.size >= shown.size) {
                 item(span = { GridItemSpan(3) }) {
-                    Text("Load more moments ↓", color = Coral, textAlign = TextAlign.Center,
+                    Text("Load more", color = Coral, textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth().clickable { model.loadMore() }.padding(24.dp))
                 }
             }
@@ -526,7 +516,7 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
                         onSelectRemote(state.remoteMedia.indexOf(asset))
                     }) {
                         if (asset.isDocument && asset.thumbnailUrl.isBlank()) {
-                            Text("▤\n${asset.name}", color = Cream, maxLines = 3,
+                            Text("Document\n${asset.name}", color = Cream, maxLines = 3,
                                 modifier = Modifier.align(Alignment.Center).padding(8.dp))
                         } else RemoteImage(asset.thumbnailUrl, state.server?.deviceToken.orEmpty(), asset.needsAuth,
                             asset.name, Modifier.fillMaxSize(), ContentScale.Crop)
@@ -541,7 +531,7 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
             }
             if (state.searchQuery.isBlank() && !state.remoteLoading && state.remoteMedia.size < state.remoteTotal) {
                 item(span = { GridItemSpan(3) }) {
-                    Text("Load more from server ↓", color = Coral, textAlign = TextAlign.Center,
+                    Text("Load more from server", color = Coral, textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth().clickable { model.loadRemote(false) }.padding(24.dp))
                 }
             }
@@ -551,7 +541,8 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
 
 @Composable
 private fun VideoBadge() {
-    Text("▶", color = Cream, modifier = Modifier.padding(6.dp).background(Ink.copy(alpha = .70f))
+    Text("Video", color = Cream, style = MaterialTheme.typography.labelMedium,
+        modifier = Modifier.padding(6.dp).background(Ink.copy(alpha = .70f))
         .padding(horizontal = 6.dp, vertical = 2.dp))
 }
 
@@ -584,14 +575,14 @@ private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modif
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(22.dp)) {
         BrandHeader()
         Spacer(Modifier.height(34.dp))
-        Label("OFFLOAD / CONTROL ROOM")
+        Label("Transfers and backup")
         Spacer(Modifier.height(12.dp))
         Text("Backup", color = Cream, style = MaterialTheme.typography.headlineLarge)
         Spacer(Modifier.height(8.dp))
         Text("Original quality, direct to your server.", color = Muted)
         Spacer(Modifier.height(30.dp))
         if (!state.mediaGranted) {
-            StepCard("!", "Allow photo access", "Select the media Android lets Fotoro back up automatically.")
+            StepCard("1", "Allow photo access", "Select the media Android lets Fotoro back up automatically.")
             PrimaryButton("Choose photo access", onMediaPermission)
             Spacer(Modifier.height(20.dp))
         }
@@ -613,20 +604,20 @@ private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modif
             Switch(checked = state.wifiOnly, onCheckedChange = model::setWifiOnly)
         }
         Spacer(Modifier.height(10.dp))
-        StepCard(if (state.transfersPaused) "Ⅱ" else "■",
+        StepCard(if (state.transfersPaused) "Paused" else "Active",
             if (state.transfersPaused) "Transfers stopped" else "Transfer control",
             if (state.transfersPaused) "No automatic or selected files will upload until you resume."
             else "Stop an active transfer and pause future uploads at any time.")
         Spacer(Modifier.height(10.dp))
-        PrimaryButton(if (state.transfersPaused) "Resume transfers" else "Stop transfers",
+        SecondaryButton(if (state.transfersPaused) "Resume transfers" else "Stop transfers",
             if (state.transfersPaused) model::resumeTransfers else model::stopTransfers)
         Spacer(Modifier.height(14.dp))
-        StepCard("✓", "${state.backedUp} with two verified copies", "Ready to offload from your phone when you choose.")
+        StepCard("2", "${state.backedUp} with two verified copies", "Ready to offload from your phone when you choose.")
         Spacer(Modifier.height(10.dp))
-        StepCard("↗", "${state.primaryOnly} on your server", "Waiting for a second verified disk copy.")
+        StepCard("1", "${state.primaryOnly} on your server", "Waiting for a second verified disk copy.")
         Spacer(Modifier.height(24.dp))
         if (state.syncState == WorkInfo.State.RUNNING) {
-            Label("TRANSFER IN PROGRESS", Mint)
+            Label("Transfer in progress", Mint)
             Spacer(Modifier.height(8.dp))
             Text(state.syncName.ifBlank { "Checking your library" }, color = Cream)
             Spacer(Modifier.height(8.dp))
@@ -641,7 +632,7 @@ private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modif
         PrimaryButton("Back up now", model::syncNow,
             state.transfersPaused || !state.mediaGranted || state.syncState == WorkInfo.State.RUNNING)
         Spacer(Modifier.height(12.dp))
-        PrimaryButton("Choose files to offload", onPickFiles, state.transfersPaused)
+        SecondaryButton("Choose files to offload", onPickFiles, state.transfersPaused)
         Text("Select photos, videos, or documents. Each original transfers in the background and shows progress in notifications.",
             color = Muted, style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(top = 10.dp))
@@ -651,7 +642,7 @@ private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modif
         Spacer(Modifier.height(42.dp))
         HorizontalDivider(color = Line)
         Spacer(Modifier.height(24.dp))
-        Label("ACCOUNT & DEVICE")
+        Label("Account and device")
         Spacer(Modifier.height(12.dp))
         Text(state.account?.email.orEmpty(), color = Cream)
         Text(state.server?.url?.removePrefix("https://").orEmpty(), color = Muted)
@@ -695,7 +686,7 @@ private fun Viewer(assets: List<LocalAsset>, initial: Int, close: () -> Unit) {
             }
             Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).statusBarsPadding()
                 .background(Ink.copy(alpha = .72f)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("✕", color = Cream, fontSize = 22.sp,
+                Text("Close", color = Cream, fontSize = 14.sp,
                     modifier = Modifier.clickable(onClick = close).padding(end = 20.dp))
                 Column(Modifier.weight(1f)) {
                     Text(assets[pager.currentPage].name, color = Cream, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -714,10 +705,10 @@ private fun Viewer(assets: List<LocalAsset>, initial: Int, close: () -> Unit) {
 private fun ViewerControls(page: Int, total: Int, previous: () -> Unit, next: () -> Unit, modifier: Modifier) {
     Row(modifier.fillMaxWidth().background(Ink.copy(alpha = .82f)).padding(horizontal = 22.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-        Text("‹", color = if (page > 0) Cream else Muted, fontSize = 32.sp,
+        Text("Previous", color = if (page > 0) Cream else Muted, fontSize = 14.sp,
             modifier = Modifier.clickable(enabled = page > 0, onClick = previous).padding(horizontal = 14.dp))
-        Text("PINCH TO ZOOM", color = Muted, style = MaterialTheme.typography.labelMedium)
-        Text("›", color = if (page < total - 1) Cream else Muted, fontSize = 32.sp,
+        Text("Pinch to zoom", color = Muted, style = MaterialTheme.typography.labelMedium)
+        Text("Next", color = if (page < total - 1) Cream else Muted, fontSize = 14.sp,
             modifier = Modifier.clickable(enabled = page < total - 1, onClick = next).padding(horizontal = 14.dp))
     }
 }
@@ -763,7 +754,7 @@ private fun RemoteViewer(assets: List<ServerAsset>, deviceToken: String, initial
             }
             Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).statusBarsPadding()
                 .background(Ink.copy(alpha = .72f)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("✕", color = Cream, fontSize = 22.sp,
+                Text("Close", color = Cream, fontSize = 14.sp,
                     modifier = Modifier.clickable(onClick = close).padding(end = 20.dp))
                 Column(Modifier.weight(1f)) {
                     Text(assets[pager.currentPage].name, color = Cream, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -782,7 +773,7 @@ private fun RemoteViewer(assets: List<ServerAsset>, deviceToken: String, initial
                         fontSize = 12.sp)
                 }
                 Text(if (state.verifyingOriginal && state.originalVerificationId == current.id) "Checking original…"
-                    else "Verify downloaded original ↻", color = Coral, fontSize = 12.sp,
+                    else "Verify downloaded original", color = Coral, fontSize = 12.sp,
                     modifier = Modifier.clickable(enabled = !state.verifyingOriginal) { model.verifyOriginal(current) }
                         .padding(vertical = 7.dp))
             }
