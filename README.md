@@ -1,46 +1,39 @@
 # Fotoro for Android
 
-The Android companion for a self-hosted Fotoro server. It signs in with the same Google/Supabase account as the web dashboard, pairs this phone with the account's Tailscale server, shows the local camera roll, and backs up original photos and videos.
+Fotoro for Android is the phone companion to a media archive on your own Linux host. It shows local and server libraries, transfers original photos and videos in the background, and lets you choose individual documents to offload. The [Fotoro host](https://github.com/Fotoro/Fotoro-Model) owns the catalogue and stored files; the [website](https://github.com/Fotoro/Fotoro-Server) provides account access and device pairing.
 
-The Library has **On phone** and **On server** views. The server view pages through `/api/v1/media`, groups items by capture month, uses small cached thumbnails and larger previews, and streams video by URL. It can still show items after they are no longer on the phone, provided the server and Tailscale route are reachable. Server search also opens older legacy images that are present only in the server's search index.
+## Architecture
 
-The app also shows the web dashboard's measured storage, device list, processing counts, schedule toggle, and diagnostics. Backup includes an explicit file picker for photos, videos, and documents, with background transfer progress. PDF documents open in the app; other documents can open in an installed Android app. Server originals can be downloaded and checked against their SHA-256 digest on demand. Viewing the server library does not require permission to read local photos.
+```mermaid
+flowchart LR
+    M[Android MediaStore] --> C[MediaCatalog]
+    C --> V[AppViewModel and Compose UI]
+    C --> S[WorkManager sync]
+    S -->|status batches and resumable chunks| A[Fotoro host API]
+    A -->|paged media and measured state| V
+    G[Google and Supabase account] --> P[Pairing flow]
+    P --> K[Encrypted credential store]
+    K --> S
+```
 
-## Configure and run
+`AppViewModel` owns screen state. `data/` contains the MediaStore catalogue, API client, server models and encrypted credential store. `sync/` schedules and performs background work. `ui/` contains onboarding, gallery, viewer, backup and dashboard screens. Compose displays state; uploads stay in WorkManager rather than a screen lifecycle.
 
-1. Start the linked server on your computer with `./fotoroctl start`. Keep Tailscale connected on both devices. The current pairing flow uses the server's private `*.ts.net` address; the website's `/api/pairing` route must also be able to reach the running server through its configured relay.
-2. In Google Cloud Console, create an **Android** OAuth client for package `com.nc.fotoro` and the SHA-1 of the signing certificate. Use the **same Google Cloud project** and Web OAuth client as the existing Fotoro website. Register every debug and release signing certificate used to install the app.
-3. Add these publishable values to the ignored `local.properties` file (or matching environment variables):
+## Identity and pairing
 
-   ```properties
-   FOTORO_GOOGLE_WEB_CLIENT_ID=your-existing-web-oauth-client-id
-   FOTORO_SUPABASE_URL=https://your-project.supabase.co
-   FOTORO_SUPABASE_ANON_KEY=your-publishable-supabase-key
-   ```
+The app signs into the same Google and Supabase account as the website. It can use native Google sign-in or a browser handoff. The linked host is discovered from that account; a short-lived pairing invitation exchanges for a revocable device token. The token is stored with Android Keystore-backed encryption and used for device-scoped API requests. Tailscale supplies the route to the host, while the host checks the credential on protected routes.
 
-   The Google Web client ID must match the ID accepted by the website's `/api/auth/verify` endpoint. Never place the Supabase service role key in the Android app.
+Native Google sign-in requires an Android OAuth client for package `com.nc.fotoro` with the installed APK's signing certificate SHA-1, in the same Google Cloud project as the website's Web OAuth client. The [v0.1 release](https://github.com/Fotoro/Fotoro-Android/releases/tag/v0.1) lists its certificate fingerprint. Browser sign-in uses the website handoff and does not depend on the Android certificate. The Supabase URL and publishable key are app configuration; a service-role key must never be embedded in the app.
 
-4. Build with `./gradlew :app:assembleDebug` and install `app/build/outputs/apk/debug/app-debug.apk`. Sign in with Google, pair the phone, then grant photo and video access if you want automatic backup.
+## Backup and browsing
 
-For the debug certificate SHA-1, run `./gradlew signingReport` and find the `debug` variant. A Google sign-in error before the website request usually means the Android OAuth client or SHA-1 is missing.
+- MediaStore supplies stable media IDs, capture dates and generation counters. The app asks the host about up to 200 items per status batch and hashes only files that need upload. A full reconciliation runs at least daily even when a generation marker has not changed.
+- WorkManager schedules periodic checks under battery and network constraints. Automatic backup defaults to unmetered Wi-Fi; Android decides the exact execution time. The foreground app also observes new media. Manual backup and selected-file upload are explicit actions.
+- Originals move in 4 MiB chunks. The host records each upload offset and verifies the completed SHA-256 digest. A stopped transfer cancels active and queued work, pauses automatic backup across restarts and resumes from the saved server offset when possible. Progress appears in a foreground notification.
+- The app sends capture time with the original. The server catalogue keeps capture time separate from import time. Fotoro never deletes phone media after upload; it reports a primary server copy and a verified second server copy separately.
+- The local gallery reads MediaStore. The server gallery pages through `/api/v1/media`, groups by capture month and loads small thumbnails before larger display images. Documents selected through Android's file picker upload in the background; automatic backup covers MediaStore photos and videos only.
 
-If Google Credential Manager reports an account reauth error, first verify that the Google Cloud project has an **Android OAuth client** for package `com.nc.fotoro` and the SHA-1 of the APK installed on your phone. For the debug APK built in this repository on this workstation, the SHA-1 is `E4:E2:44:C3:95:BB:97:9E:40:5E:EA:FD:44:1C:BD:99:55:4E:52:45`. The Android client must live in the same Google Cloud project as the Web client used in `FOTORO_GOOGLE_WEB_CLIENT_ID`. A release APK needs its own signing certificate fingerprint. You do not need a separate Play Console listing just to test sign-in.
+## Limits and release notes
 
-**Continue in browser** uses the website's Google OAuth flow and a short-lived, one-time handoff. It requires the live website deployment containing `/api/mobile-handoff` and the existing `cli_auth_sessions` Supabase table. A Git push alone is not proof that Vercel deployed the site. Expired Supabase sessions return to the sign-in screen; reconnecting with the same account preserves the phone's server pairing.
+Background work needs Android to grant media access, a reachable host and an active Tailscale route. Selected-photo permission limits automatic backup to those selections. The host's second-copy status requires an independently mounted backup disk; one server copy is not two. Full video preview generation and an automated disaster-restore drill remain separate work.
 
-The `release` build produces an unsigned APK unless you configure a release signing key. Register its SHA-1 with the Android OAuth client before using native Google sign-in. Browser sign-in remains available without an Android OAuth certificate.
-Keep the release signing keystore and its password safe: future app updates must use the same key to install over this version.
-
-## How backup works
-
-- The server stays the source of truth. The app asks `/api/v1/device-assets/status` about up to 200 MediaStore assets at a time, and only hashes files the server says it needs. It uploads originals in 4 MiB chunks with the server's resumable upload API. An interrupted upload resumes from the server's reported byte offset. MediaStore generation tracking skips unchanged full scans; a full reconciliation still runs daily. Pending second-copy items are checked in bounded batches to avoid hammering the server.
-- WorkManager runs a periodic check when battery is not low and the selected network is available. Automatic backup defaults to unmetered Wi-Fi; users can allow mobile data in Backup settings. Android schedules periodic work at its discretion; 15 minutes is the requested interval, not a delivery guarantee. While the app is visible, a MediaStore observer queues another check after new media appears. Manual **Back up now** can use any connected network.
-- Transfers run off the UI thread and show progress in a foreground notification. Each run yields after eight minutes so Android can schedule later work. The server performs its own second-copy backup; the app reports **on server** and **two copies** separately.
-- **Stop transfers** in Home, Backup, or the active notification cancels queued and running uploads and pauses automatic backup across app restarts. **Resume transfers** restores the schedule and starts a new reconciliation. An interrupted original resumes from its saved server offset; stopping does not delete either copy.
-- Uploads send the media capture time from Android MediaStore. After updating the server, run `./fotoro fix-dates --dry-run` and `./fotoro fix-dates` once to repair the existing timeline from embedded metadata or preserved file times. The latter is an approximation when the file has no embedded capture date.
-- **Choose files to offload** uses Android's document picker. The app keeps read permission for selected URIs and queues each file in a serial WorkManager chain; progress and failures appear in notifications and the Backup screen. This is how documents are uploaded in v1. Automatic backup scans MediaStore photos and videos only.
-- Fotoro never deletes media from the phone. If Android grants access to selected photos only, it can back up only those selections. Background backup requires the phone's Tailscale VPN and home server to be reachable.
-
-## Code layout
-
-`AppViewModel` owns screen state; `data/` contains the encrypted credential store, network API, and MediaStore catalog; `sync/` contains WorkManager scheduling and resumable transfer; `ui/` contains the Compose onboarding, gallery, viewer, and backup controls. Credentials are encrypted with Android Keystore and excluded from Android backup.
+The v0.1 APK is signed for Android 11 and newer. Updates must use the same release signing key. A debug-signed installation cannot be updated in place by the release-signed APK. The public release is a useful test build, but device behavior, network changes and large-library scrolling still need testing on real phones.
