@@ -10,6 +10,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -291,15 +293,15 @@ private fun Home(state: AppUiState, model: AppViewModel, onMediaPermission: () -
     var selectedRemote by remember { mutableIntStateOf(-1) }
     val shown = state.media.take(state.visibleCount)
     Scaffold(containerColor = Ink, bottomBar = {
-        Row(Modifier.fillMaxWidth().background(Panel).border(1.dp, Line).padding(horizontal = 8.dp, vertical = 4.dp),
+        Row(Modifier.fillMaxWidth().background(Ink).padding(horizontal = 8.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceEvenly) {
             Tab.entries.forEach { item ->
-                Column(Modifier.weight(1f).clickable { tab = item }.padding(horizontal = 4.dp, vertical = 6.dp),
+                Column(Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(if (tab == item) PanelRaised else Color.Transparent)
+                    .clickable { tab = item }.padding(horizontal = 4.dp, vertical = 9.dp),
                     horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(Modifier.fillMaxWidth().height(2.dp)
-                        .background(if (tab == item) Coral else Color.Transparent))
-                    Spacer(Modifier.height(10.dp))
-                    Text(item.name, color = if (tab == item) Cream else Muted, fontSize = 12.sp)
+                    Text(item.name.uppercase(), color = if (tab == item) Cream else Muted,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 10.sp,
+                        fontWeight = if (tab == item) FontWeight.SemiBold else FontWeight.Normal)
                 }
             }
         }
@@ -358,7 +360,7 @@ private fun OverviewScreen(state: AppUiState, model: AppViewModel, modifier: Mod
         Spacer(Modifier.height(8.dp))
         Text("Photos from your phone, stored on your server", color = Muted, style = MaterialTheme.typography.bodyLarge)
         Spacer(Modifier.height(28.dp))
-        Box(Modifier.fillMaxWidth().background(Panel).border(1.dp, Line).padding(22.dp)) {
+        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Panel).border(1.dp, Line, RoundedCornerShape(16.dp)).padding(22.dp)) {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(9.dp).background(if (state.serverOnline) Mint else Coral))
@@ -411,7 +413,7 @@ private fun OverviewScreen(state: AppUiState, model: AppViewModel, modifier: Mod
 
 @Composable
 private fun StatCard(value: String, label: String, modifier: Modifier) {
-    Column(modifier.background(Panel).border(1.dp, Line).padding(16.dp)) {
+    Column(modifier.clip(RoundedCornerShape(14.dp)).background(Panel).border(1.dp, Line, RoundedCornerShape(14.dp)).padding(16.dp)) {
         Text(value, color = Cream, style = MaterialTheme.typography.headlineLarge)
         Spacer(Modifier.height(8.dp))
         Label(label, Muted)
