@@ -125,14 +125,18 @@ private fun DotLogo(modifier: Modifier = Modifier, animated: Boolean = false) {
     val progress = remember { Animatable(if (animated) 0f else 1f) }
     LaunchedEffect(animated) { if (animated) progress.animateTo(1f, tween(620)) }
     Canvas(modifier) {
-        val step = size.minDimension / 3.4f
-        val radius = step * .20f
-        for (row in 0..2) for (column in 0..2) {
-            val index = row * 3 + column
-            val phase = ((progress.value * 1.45f) - index * .055f).coerceIn(0f, 1f)
-            drawCircle(if (index == 4) Ink else Coral, radius * phase,
-                Offset(step * (column + .7f), step * (row + .7f)))
-        }
+        val inset = size.minDimension * .13f
+        val right = size.width - inset
+        val bottom = size.height - inset
+        val alpha = progress.value
+        drawRect(Coral.copy(alpha = alpha), Offset(inset, inset), androidx.compose.ui.geometry.Size(right - inset, bottom - inset), style = androidx.compose.ui.graphics.drawscope.Stroke(size.minDimension * .045f))
+        val left = size.width * .39f
+        val top = size.height * .30f
+        val weight = size.minDimension * .055f
+        drawLine(Cream.copy(alpha = alpha), Offset(left, top), Offset(left, bottom - size.height * .25f), weight)
+        drawLine(Cream.copy(alpha = alpha), Offset(left, top), Offset(right - size.width * .27f, top), weight)
+        drawLine(Cream.copy(alpha = alpha), Offset(left, size.height * .51f), Offset(right - size.width * .37f, size.height * .51f), weight)
+        drawCircle(Coral.copy(alpha = alpha), size.minDimension * .045f, Offset(right - size.width * .18f, bottom - size.height * .18f))
     }
 }
 
