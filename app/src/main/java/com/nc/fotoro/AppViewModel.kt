@@ -57,6 +57,7 @@ data class AppUiState(
     val wifiOnly: Boolean = true,
     val media: List<LocalAsset> = emptyList(),
     val localTotal: Int = 0,
+    val localLoading: Boolean = false,
     val remoteMedia: List<ServerAsset> = emptyList(),
     val remoteTotal: Int = 0,
     val remoteLoading: Boolean = false,
@@ -99,6 +100,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = application.getSharedPreferences("fotoro_sync", 0)
     private var lastDashboardRefresh = 0L
     private var browserPollingJob: Job? = null
+    private var mediaRefreshJob: Job? = null
+    private var mediaPageJob: Job? = null
     private val workManager = WorkManager.getInstance(application)
     private val workLiveData = workManager.getWorkInfosForUniqueWorkLiveData(SyncScheduler.MANUAL)
     private val autoWorkLiveData = workManager.getWorkInfosForUniqueWorkLiveData(SyncScheduler.AUTO)
@@ -391,14 +394,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             .onFailure { error -> _state.update { it.copy(remoteLoading = false, error = error.message ?: "Could not load server library") } }
     }
 
-    fun refreshMedia() = viewModelScope.launch {
-        val granted = catalog.hasAccess()
-        _state.update { it.copy(mediaGranted = granted) }
-        if (granted) {
-            runCatching { catalog.count() }.onSuccess { total -> _state.update { it.copy(localTotal = total) } }
+    fun refreshMedia() {
+        if (mediaRefreshJob?.isActive == true || mediaPageJob?.isActive == true) return
+        mediaRefreshJob = viewModelScope.launch {
+            val granted = catalog.hasAccess()
+            _state.update { it.copy(mediaGranted = granted, localLoading = granted) }
+            if (!granted) return@launch
+            runCatching { catalog.count() }.onSuccess { total ->
+                _state.update { it.copy(localTotal = total) }
+            }
             runCatching { catalog.list(limit = 1000) }
                 .onSuccess { assets -> _state.update { it.copy(media = assets) } }
                 .onFailure { error -> _state.update { it.copy(error = error.message ?: "Could not read your photos") } }
+            _state.update { it.copy(localLoading = false) }
             if (store.server != null) {
                 SyncScheduler.scheduleAuto(getApplication(), state.value.autoSync, state.value.wifiOnly)
                 if (state.value.autoSync && prefs.getLong("last_sync", 0) == 0L) SyncScheduler.syncNow(getApplication(), state.value.wifiOnly)
@@ -407,11 +415,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadMore() {
-        val next = state.value.visibleCount + 120
+        val current = state.value
+        if (mediaPageJob?.isActive == true || mediaRefreshJob?.isActive == true) return
+        val next = current.visibleCount + 120
         _state.update { it.copy(visibleCount = next) }
-        if (next >= state.value.media.size && state.value.media.size == 1000) viewModelScope.launch {
-            runCatching { catalog.list(limit = state.value.media.size + 1000) }
-                .onSuccess { assets -> _state.update { it.copy(media = assets) } }
+        if (next >= current.media.size && current.media.size >= 1000) {
+            mediaPageJob = viewModelScope.launch {
+                _state.update { it.copy(localLoading = true) }
+                runCatching { catalog.list(limit = 1000, offset = current.media.size) }
+                    .onSuccess { assets -> _state.update { it.copy(media = it.media + assets, localLoading = false) } }
+                    .onFailure { error -> _state.update { it.copy(visibleCount = current.visibleCount, localLoading = false,
+                        error = error.message ?: "Could not load more photos") } }
+            }
         }
     }
 

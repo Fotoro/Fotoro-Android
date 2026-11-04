@@ -1,11 +1,12 @@
 package com.nc.fotoro.data
 
 import android.Manifest
-import android.content.ContentResolver
 import android.content.ContentUris
+import android.content.ContentResolver
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Bundle
 import android.os.Build
 import android.provider.MediaStore
 import androidx.core.content.ContextCompat
@@ -48,8 +49,9 @@ class MediaCatalog(private val context: Context) {
         return permissions.any { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
     }
 
-    suspend fun list(limit: Int = Int.MAX_VALUE): List<LocalAsset> = withContext(Dispatchers.IO) {
+    suspend fun list(limit: Int = Int.MAX_VALUE, offset: Int = 0): List<LocalAsset> = withContext(Dispatchers.IO) {
         if (!hasAccess()) return@withContext emptyList()
+        if (limit <= 0 || offset < 0) return@withContext emptyList()
         val uri = MediaStore.Files.getContentUri("external")
         val columns = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME,
             MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE,
@@ -59,10 +61,17 @@ class MediaCatalog(private val context: Context) {
         val imageType = MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE
         val videoType = MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
         val result = ArrayList<LocalAsset>(minOf(limit, 512))
-        context.contentResolver.query(uri, columns,
-            "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (?, ?)",
-            arrayOf(imageType.toString(), videoType.toString()),
-            "${MediaStore.MediaColumns.DATE_TAKEN} DESC, ${MediaStore.MediaColumns.DATE_ADDED} DESC")?.use { cursor ->
+        val query = Bundle().apply {
+            putString(ContentResolver.QUERY_ARG_SQL_SELECTION,
+                "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (?, ?)")
+            putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
+                arrayOf(imageType.toString(), videoType.toString()))
+            putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER,
+                "${MediaStore.MediaColumns.DATE_TAKEN} DESC, ${MediaStore.MediaColumns.DATE_ADDED} DESC, ${MediaStore.MediaColumns._ID} DESC")
+            if (limit != Int.MAX_VALUE) putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
+            if (offset > 0) putInt(ContentResolver.QUERY_ARG_OFFSET, offset)
+        }
+        context.contentResolver.query(uri, columns, query, null)?.use { cursor ->
             val idColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
             val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
             val mimeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)

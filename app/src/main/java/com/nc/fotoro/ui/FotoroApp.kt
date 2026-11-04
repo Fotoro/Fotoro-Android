@@ -5,6 +5,8 @@ import android.net.Uri
 import android.text.format.DateUtils
 import android.widget.VideoView
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -43,6 +45,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -66,6 +69,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -76,20 +80,25 @@ import coil3.compose.AsyncImage
 import coil3.network.NetworkHeaders
 import coil3.network.httpHeaders
 import coil3.request.ImageRequest
-import coil3.video.VideoFrameDecoder
+import coil3.request.crossfade
 import com.nc.fotoro.AppUiState
 import com.nc.fotoro.AppViewModel
 import com.nc.fotoro.data.LocalAsset
 import com.nc.fotoro.data.ServerAsset
-import com.nc.fotoro.ui.theme.Coral
+import com.nc.fotoro.ui.theme.Cobalt
+import com.nc.fotoro.ui.theme.CobaltLight
 import com.nc.fotoro.ui.theme.Cream
+import com.nc.fotoro.ui.theme.ExceptionColor
+import com.nc.fotoro.ui.theme.GalleryCanvas
+import com.nc.fotoro.ui.theme.GalleryLine
+import com.nc.fotoro.ui.theme.GalleryMuted
+import com.nc.fotoro.ui.theme.GallerySurface
 import com.nc.fotoro.ui.theme.Ink
 import com.nc.fotoro.ui.theme.Line
 import com.nc.fotoro.ui.theme.Mint
 import com.nc.fotoro.ui.theme.Muted
 import com.nc.fotoro.ui.theme.Panel
 import com.nc.fotoro.ui.theme.PanelRaised
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -103,18 +112,16 @@ fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onBrowserSignIn: 
               onMediaPermission: () -> Unit,
               onPickFiles: () -> Unit, onScanPairingQr: () -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
-    var splash by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) { delay(800); splash = false }
     Box(Modifier.fillMaxSize().background(Ink)) {
         when {
-            splash || state.booting -> Splash()
+            state.booting -> Splash()
             state.account == null || state.reauthRequired -> AuthScreen(state, onGoogleSignIn, onBrowserSignIn)
             state.server == null -> PairScreen(state, model::pair, onScanPairingQr)
             else -> Home(state, model, onMediaPermission, onPickFiles)
         }
         state.error?.let { message ->
             Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(16.dp)
-                .fillMaxWidth().background(PanelRaised).border(1.dp, Coral, MaterialTheme.shapes.small)
+                .fillMaxWidth().background(PanelRaised).border(1.dp, ExceptionColor, MaterialTheme.shapes.small)
                 .clickable { model.clearError() }.padding(16.dp)) {
                 Text(message, color = Cream, style = MaterialTheme.typography.bodyMedium)
             }
@@ -123,22 +130,23 @@ fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onBrowserSignIn: 
 }
 
 @Composable
-private fun DotLogo(modifier: Modifier = Modifier, animated: Boolean = false) {
+private fun DotLogo(modifier: Modifier = Modifier, animated: Boolean = false, onDarkSurface: Boolean = true) {
     val progress = remember { Animatable(if (animated) 0f else 1f) }
+    val logoInk = if (onDarkSurface) Cream else Ink
     LaunchedEffect(animated) { if (animated) progress.animateTo(1f, tween(620)) }
     Canvas(modifier) {
         val inset = size.minDimension * .13f
         val right = size.width - inset
         val bottom = size.height - inset
         val alpha = progress.value
-        drawRect(Coral.copy(alpha = alpha), Offset(inset, inset), androidx.compose.ui.geometry.Size(right - inset, bottom - inset), style = androidx.compose.ui.graphics.drawscope.Stroke(size.minDimension * .045f))
+        drawRect(Cobalt.copy(alpha = alpha), Offset(inset, inset), androidx.compose.ui.geometry.Size(right - inset, bottom - inset), style = androidx.compose.ui.graphics.drawscope.Stroke(size.minDimension * .045f))
         val left = size.width * .39f
         val top = size.height * .30f
         val weight = size.minDimension * .055f
-        drawLine(Cream.copy(alpha = alpha), Offset(left, top), Offset(left, bottom - size.height * .25f), weight)
-        drawLine(Cream.copy(alpha = alpha), Offset(left, top), Offset(right - size.width * .27f, top), weight)
-        drawLine(Cream.copy(alpha = alpha), Offset(left, size.height * .51f), Offset(right - size.width * .37f, size.height * .51f), weight)
-        drawCircle(Coral.copy(alpha = alpha), size.minDimension * .045f, Offset(right - size.width * .18f, bottom - size.height * .18f))
+        drawLine(logoInk.copy(alpha = alpha), Offset(left, top), Offset(left, bottom - size.height * .25f), weight)
+        drawLine(logoInk.copy(alpha = alpha), Offset(left, top), Offset(right - size.width * .27f, top), weight)
+        drawLine(logoInk.copy(alpha = alpha), Offset(left, size.height * .51f), Offset(right - size.width * .37f, size.height * .51f), weight)
+        drawCircle(Cobalt.copy(alpha = alpha), size.minDimension * .045f, Offset(right - size.width * .18f, bottom - size.height * .18f))
     }
 }
 
@@ -156,16 +164,17 @@ private fun Splash() {
 }
 
 @Composable
-private fun Label(text: String, color: Color = Coral) {
+private fun Label(text: String, color: Color = CobaltLight) {
     Text(text, color = color, style = MaterialTheme.typography.labelMedium)
 }
 
 @Composable
-private fun BrandHeader() {
+private fun BrandHeader(onDarkSurface: Boolean = true) {
+    val foreground = if (onDarkSurface) Cream else Ink
     Row(verticalAlignment = Alignment.CenterVertically) {
-        DotLogo(Modifier.size(37.dp))
+        DotLogo(Modifier.size(37.dp), onDarkSurface = onDarkSurface)
         Spacer(Modifier.width(10.dp))
-        Text("fotoro.", color = Cream, style = MaterialTheme.typography.titleLarge)
+        Text("fotoro.", color = foreground, style = MaterialTheme.typography.titleLarge)
     }
 }
 
@@ -185,7 +194,7 @@ private fun AuthScreen(state: AppUiState, signIn: () -> Unit, browserSignIn: () 
         PrimaryButton(if (state.reauthRequired) "Reconnect with Google" else "Continue with Google", signIn, state.busy)
         Spacer(Modifier.height(10.dp))
         Text(if (state.browserSignInPending) "Waiting for browser sign-in…"
-            else "Continue in browser", color = Coral,
+            else "Continue in browser", color = CobaltLight,
             modifier = Modifier.clickable(enabled = !state.busy && !state.browserSignInPending, onClick = browserSignIn)
                 .padding(vertical = 12.dp))
         Spacer(Modifier.height(18.dp))
@@ -224,7 +233,7 @@ private fun PairScreen(state: AppUiState, pair: () -> Unit, scanQr: () -> Unit) 
         Spacer(Modifier.height(12.dp))
         SecondaryButton("Scan QR from Devices", scanQr, state.busy)
         Spacer(Modifier.height(12.dp))
-        Text("Get Tailscale for Android", color = Coral, modifier = Modifier.clickable {
+        Text("Get Tailscale for Android", color = CobaltLight, modifier = Modifier.clickable {
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://tailscale.com/download/android")))
         }.padding(vertical = 10.dp))
     }
@@ -232,7 +241,8 @@ private fun PairScreen(state: AppUiState, pair: () -> Unit, scanQr: () -> Unit) 
 
 @Composable
 private fun StepCard(number: String, title: String, detail: String) {
-    Row(Modifier.fillMaxWidth().background(Panel).border(1.dp, Line).padding(18.dp)) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Panel)
+        .border(1.dp, Line, RoundedCornerShape(14.dp)).padding(18.dp)) {
         Label(number)
         Spacer(Modifier.width(18.dp))
         Column {
@@ -265,9 +275,10 @@ private fun PermissionScreen(request: () -> Unit) {
 
 @Composable
 private fun PrimaryButton(text: String, action: () -> Unit, busy: Boolean = false) {
-    Button(onClick = action, enabled = !busy, modifier = Modifier.fillMaxWidth().height(56.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = Coral, contentColor = Ink),
-        shape = MaterialTheme.shapes.small) {
+    Button(onClick = action, enabled = !busy, modifier = Modifier.fillMaxWidth().height(54.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = Cobalt, contentColor = Cream),
+        elevation = ButtonDefaults.buttonElevation(defaultElevation = 1.dp, pressedElevation = 0.dp),
+        shape = RoundedCornerShape(50.dp)) {
         if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Ink)
         else Text(text, fontWeight = FontWeight.Medium, fontSize = 15.sp)
     }
@@ -276,7 +287,8 @@ private fun PrimaryButton(text: String, action: () -> Unit, busy: Boolean = fals
 @Composable
 private fun SecondaryButton(text: String, action: () -> Unit, busy: Boolean = false) {
     OutlinedButton(onClick = action, enabled = !busy, modifier = Modifier.fillMaxWidth().height(52.dp),
-        shape = MaterialTheme.shapes.small) {
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = Cream),
+        shape = RoundedCornerShape(50.dp)) {
         Text(text, fontWeight = FontWeight.Medium, fontSize = 15.sp)
     }
 }
@@ -291,22 +303,27 @@ private fun Home(state: AppUiState, model: AppViewModel, onMediaPermission: () -
     var morePage by remember { mutableStateOf(MorePage.Menu) }
     var selected by remember { mutableIntStateOf(-1) }
     var selectedRemote by remember { mutableIntStateOf(-1) }
-    val shown = state.media.take(state.visibleCount)
+    val shown = remember(state.media, state.visibleCount) { state.media.take(state.visibleCount) }
     Scaffold(containerColor = Ink, bottomBar = {
         Row(Modifier.fillMaxWidth().background(Ink).padding(horizontal = 8.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceEvenly) {
             Tab.entries.forEach { item ->
-                Column(Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(if (tab == item) PanelRaised else Color.Transparent)
-                    .clickable { tab = item }.padding(horizontal = 4.dp, vertical = 9.dp),
+                val selectedTab = tab == item
+                val tabSurface by animateColorAsState(if (selectedTab) Cobalt else Color.Transparent,
+                    animationSpec = tween(150), label = "tab-surface")
+                Column(Modifier.weight(1f).clip(RoundedCornerShape(50.dp))
+                    .background(tabSurface)
+                    .clickable(role = Role.Tab) { tab = item }.padding(horizontal = 4.dp, vertical = 9.dp),
                     horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(item.name.uppercase(), color = if (tab == item) Cream else Muted,
+                    Text(item.name.uppercase(), color = if (selectedTab) Cream else Muted,
                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 10.sp,
-                        fontWeight = if (tab == item) FontWeight.SemiBold else FontWeight.Normal)
+                        fontWeight = if (selectedTab) FontWeight.SemiBold else FontWeight.Normal)
                 }
             }
         }
     }) { padding ->
-        when (tab) {
+        Crossfade(targetState = tab, animationSpec = tween(160), label = "home-tab-content") { activeTab ->
+        when (activeTab) {
             Tab.Overview -> OverviewScreen(state, model, Modifier.padding(padding), openLibrary = { tab = Tab.Library })
             Tab.Library -> LibraryScreen(state, shown, model, Modifier.padding(padding),
                 onSelect = { selected = it }, onSelectRemote = { selectedRemote = it })
@@ -321,22 +338,24 @@ private fun Home(state: AppUiState, model: AppViewModel, onMediaPermission: () -
                         listOf(Triple("Storage", "Disk capacity and backup health", MorePage.Storage),
                             Triple("AI models", "Search and processing queue", MorePage.Processing),
                             Triple("Settings", "Account and diagnostics", MorePage.Settings)).forEach { (label, detail, page) ->
-                            Column(Modifier.fillMaxWidth().clickable { morePage = page }
-                                .background(Panel).border(1.dp, Line).padding(18.dp)) {
+                            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                                .clickable { morePage = page }.background(Panel)
+                                .border(1.dp, Line, RoundedCornerShape(14.dp)).padding(18.dp)) {
                                 Text(label, color = Cream, fontWeight = FontWeight.SemiBold)
                                 Text(detail, color = Muted)
                             }
                             Spacer(Modifier.height(10.dp))
                         }
                     }
-                    MorePage.Storage -> Box { StorageScreen(state, model); Text("Back to More", color = Coral,
+                    MorePage.Storage -> Box { StorageScreen(state, model); Text("Back to More", color = CobaltLight,
                         modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().clickable { morePage = MorePage.Menu }.padding(16.dp)) }
-                    MorePage.Processing -> Box { ProcessingScreen(state, model); Text("Back to More", color = Coral,
+                    MorePage.Processing -> Box { ProcessingScreen(state, model); Text("Back to More", color = CobaltLight,
                         modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().clickable { morePage = MorePage.Menu }.padding(16.dp)) }
-                    MorePage.Settings -> Box { SettingsScreen(state, model); Text("Back to More", color = Coral,
+                    MorePage.Settings -> Box { SettingsScreen(state, model); Text("Back to More", color = CobaltLight,
                         modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().clickable { morePage = MorePage.Menu }.padding(16.dp)) }
                 }
             }
+        }
         }
     }
     if (selected >= 0 && selected < shown.size) Viewer(shown, selected) { selected = -1 }
@@ -363,10 +382,10 @@ private fun OverviewScreen(state: AppUiState, model: AppViewModel, modifier: Mod
         Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Panel).border(1.dp, Line, RoundedCornerShape(16.dp)).padding(22.dp)) {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(9.dp).background(if (state.serverOnline) Mint else Coral))
+                    Box(Modifier.size(9.dp).background(if (state.serverOnline) Mint else ExceptionColor))
                     Spacer(Modifier.width(9.dp))
                     Label(if (state.serverOnline) "Server connected" else "Server unreachable",
-                        if (state.serverOnline) Mint else Coral)
+                        if (state.serverOnline) Mint else ExceptionColor)
                 }
                 Spacer(Modifier.height(18.dp))
                 Text(state.server?.url?.removePrefix("https://") ?: "Your server", color = Cream,
@@ -374,7 +393,7 @@ private fun OverviewScreen(state: AppUiState, model: AppViewModel, modifier: Mod
                 Spacer(Modifier.height(12.dp))
                 Text(if (state.serverOnline) "Ready for the next backup." else "Start Fotoro and connect Tailscale, then refresh.",
                     color = Muted, style = MaterialTheme.typography.bodyMedium)
-                if (!state.serverOnline) Text("Check connection", color = Coral,
+                if (!state.serverOnline) Text("Check connection", color = CobaltLight,
                     modifier = Modifier.clickable { model.checkServer() }.padding(top = 14.dp))
             }
         }
@@ -394,12 +413,12 @@ private fun OverviewScreen(state: AppUiState, model: AppViewModel, modifier: Mod
         Spacer(Modifier.height(10.dp))
         SecondaryButton(if (state.transfersPaused) "Resume transfers" else "Stop transfers",
             if (state.transfersPaused) model::resumeTransfers else model::stopTransfers)
-        Text("Refresh server data", color = Coral,
+        Text("Refresh server data", color = CobaltLight,
             modifier = Modifier.clickable { model.refreshDashboard() }.padding(vertical = 14.dp))
         Spacer(Modifier.height(30.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Recent frames", color = Cream, style = MaterialTheme.typography.titleLarge)
-            Text("See all", color = Coral, modifier = Modifier.clickable(onClick = openLibrary))
+            Text("See all", color = CobaltLight, modifier = Modifier.clickable(onClick = openLibrary))
         }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -427,7 +446,9 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
     var source by remember { mutableStateOf("On phone") }
     var searchText by remember { mutableStateOf("") }
     val gridState = rememberLazyGridState()
-    val visible = when (filter) { "Photos" -> shown.filterNot { it.isVideo }; "Videos" -> shown.filter { it.isVideo }; else -> shown }
+    val visible = remember(filter, shown) {
+        when (filter) { "Photos" -> shown.filterNot { it.isVideo }; "Videos" -> shown.filter { it.isVideo }; else -> shown }
+    }
     val remote = remember(filter, state.remoteMedia) { when (filter) {
         "Photos" -> state.remoteMedia.filter { !it.isVideo && !it.isDocument }
         "Videos" -> state.remoteMedia.filter { it.isVideo }
@@ -445,84 +466,99 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
                 .distinctUntilChanged().filter { it }.collect { model.loadRemote(false) }
         }
     }
-    LazyVerticalGrid(GridCells.Fixed(3), modifier.fillMaxSize(), state = gridState,
+    LazyVerticalGrid(GridCells.Fixed(3), modifier.fillMaxSize().background(GalleryCanvas), state = gridState,
         contentPadding = PaddingValues(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalArrangement = Arrangement.spacedBy(3.dp)) {
         item(span = { GridItemSpan(3) }) {
             Column(Modifier.statusBarsPadding().padding(22.dp)) {
-                BrandHeader()
+                BrandHeader(onDarkSurface = false)
                 Spacer(Modifier.height(26.dp))
-        Label("Your media")
+                Label("Your media", Cobalt)
                 Spacer(Modifier.height(8.dp))
-                Text("Library", color = Cream, style = MaterialTheme.typography.headlineLarge)
+                Text("Library", color = Ink, style = MaterialTheme.typography.headlineLarge)
                 Spacer(Modifier.height(5.dp))
                 Text(if (source == "On phone") "${state.localTotal} items on this phone"
-                    else "${state.remoteTotal} items on your server", color = Muted)
+                    else "${state.remoteTotal} items on your server", color = GalleryMuted)
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                     listOf("On phone", "On server").forEach { name ->
-                        Text(name, color = if (source == name) Ink else Cream,
-                            modifier = Modifier.background(if (source == name) Coral else PanelRaised)
-                                .clickable { source = name; if (name == "On server") model.loadRemote() }
-                                .padding(horizontal = 14.dp, vertical = 9.dp))
+                        val selectedSource = source == name
+                        Text(name, color = if (selectedSource) Cream else Ink,
+                            modifier = Modifier.clip(RoundedCornerShape(50.dp))
+                                .background(if (selectedSource) Cobalt else GallerySurface)
+                                .clickable(role = Role.Tab) { source = name; if (name == "On server") model.loadRemote() }
+                                .padding(horizontal = 15.dp, vertical = 9.dp))
                     }
                 }
                 Spacer(Modifier.height(17.dp))
                 if (source == "On server") {
                     OutlinedTextField(value = searchText, onValueChange = { searchText = it },
                         label = { Text("Search your archive") }, singleLine = true,
-                        modifier = Modifier.fillMaxWidth())
+                        modifier = Modifier.fillMaxWidth(), colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Ink, unfocusedTextColor = Ink,
+                            focusedContainerColor = GallerySurface, unfocusedContainerColor = GallerySurface,
+                            focusedBorderColor = Cobalt, unfocusedBorderColor = GalleryLine,
+                            focusedLabelColor = Cobalt, unfocusedLabelColor = GalleryMuted, cursorColor = Cobalt))
                     Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                        Text("Search", color = Coral,
+                        Text("Search", color = Cobalt,
                             modifier = Modifier.clickable { model.search(searchText.trim()) }.padding(vertical = 10.dp))
-                        if (state.searchQuery.isNotBlank()) Text("Clear", color = Muted,
+                        if (state.searchQuery.isNotBlank()) Text("Clear", color = GalleryMuted,
                             modifier = Modifier.clickable { searchText = ""; model.search("") }.padding(vertical = 10.dp))
                     }
-                    if (state.searchLoading) CircularProgressIndicator(Modifier.size(20.dp), color = Coral)
-                    if (state.searchQuery.isNotBlank()) Text("${state.searchHits.size} matches for “${state.searchQuery}”", color = Muted)
+                    if (state.searchLoading) CircularProgressIndicator(Modifier.size(20.dp), color = Cobalt)
+                    if (state.searchQuery.isNotBlank()) Text("${state.searchHits.size} matches for “${state.searchQuery}”", color = GalleryMuted)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                     (if (source == "On server") listOf("All", "Photos", "Videos", "Docs")
                     else listOf("All", "Photos", "Videos")).forEach { name ->
-                        Text(name, color = if (filter == name) Coral else Muted,
-                            modifier = Modifier.clickable { filter = name }.padding(vertical = 7.dp))
+                        val selectedFilter = filter == name
+                        Text(name, color = if (selectedFilter) Cobalt else GalleryMuted,
+                            modifier = Modifier.clip(RoundedCornerShape(50.dp))
+                                .background(if (selectedFilter) Cobalt.copy(alpha = .09f) else Color.Transparent)
+                                .clickable(role = Role.Tab) { filter = name }
+                                .padding(horizontal = 11.dp, vertical = 7.dp))
                     }
                 }
             }
         }
         if (source == "On phone") {
             items(visible, key = { it.stableId }) { asset ->
-                Box(Modifier.aspectRatio(1f).background(PanelRaised).clickable {
+                Box(Modifier.aspectRatio(1f).background(GallerySurface).clickable {
                     onSelect(shown.indexOf(asset))
                 }) {
                     LocalThumbnail(asset, Modifier.fillMaxSize())
                     if (asset.isVideo) VideoBadge()
                 }
             }
-            if (shown.size == state.visibleCount && state.media.size >= shown.size) {
+            if (state.localLoading) item(span = { GridItemSpan(3) }) {
+                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(23.dp), color = Cobalt, strokeWidth = 2.dp)
+                }
+            } else if (shown.size == state.visibleCount && state.media.size >= shown.size) {
                 item(span = { GridItemSpan(3) }) {
-                    Text("Load more", color = Coral, textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth().clickable { model.loadMore() }.padding(24.dp))
+                    Text("Load more on phone", color = Cobalt, textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(50.dp))
+                            .clickable { model.loadMore() }.padding(18.dp))
                 }
             }
         } else {
             if (state.searchQuery.isNotBlank()) items(state.searchHits, key = { it.hash }) { hit ->
-                Box(Modifier.aspectRatio(1f).background(PanelRaised).clickable { model.openSearchHit(hit) }) {
+                Box(Modifier.aspectRatio(1f).background(GallerySurface).clickable { model.openSearchHit(hit) }) {
                     RemoteImage(hit.thumbnailUrl, state.searchToken, true, hit.caption,
                         Modifier.fillMaxSize(), ContentScale.Crop)
                 }
             } else remoteMonths.forEach { (month, assets) ->
                 item(key = "month:$month", span = { GridItemSpan(3) }) {
                     Text(runCatching { YearMonth.parse(month).format(DateTimeFormatter.ofPattern("MMMM yyyy")) }
-                        .getOrDefault(month), color = Cream, fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.fillMaxWidth().background(Ink).padding(horizontal = 18.dp, vertical = 12.dp))
+                        .getOrDefault(month), color = Ink, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.fillMaxWidth().background(GalleryCanvas).padding(horizontal = 18.dp, vertical = 12.dp))
                 }
                 items(assets, key = { it.id }) { asset ->
-                    Box(Modifier.aspectRatio(1f).background(PanelRaised).clickable {
+                    Box(Modifier.aspectRatio(1f).background(GallerySurface).clickable {
                         onSelectRemote(state.remoteMedia.indexOf(asset))
                     }) {
                         if (asset.isDocument && asset.thumbnailUrl.isBlank()) {
-                            Text("Document\n${asset.name}", color = Cream, maxLines = 3,
+                            Text("Document\n${asset.name}", color = Ink, maxLines = 3,
                                 modifier = Modifier.align(Alignment.Center).padding(8.dp))
                         } else RemoteImage(asset.thumbnailUrl, state.server?.deviceToken.orEmpty(), asset.needsAuth,
                             asset.name, Modifier.fillMaxSize(), ContentScale.Crop)
@@ -532,12 +568,12 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
             }
             if (state.remoteLoading) item(span = { GridItemSpan(3) }) {
                 Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(Modifier.size(24.dp), color = Coral)
+                    CircularProgressIndicator(Modifier.size(24.dp), color = Cobalt)
                 }
             }
             if (state.searchQuery.isBlank() && !state.remoteLoading && state.remoteMedia.size < state.remoteTotal) {
                 item(span = { GridItemSpan(3) }) {
-                    Text("Load more from server", color = Coral, textAlign = TextAlign.Center,
+                    Text("Load more from server", color = Cobalt, textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth().clickable { model.loadRemote(false) }.padding(24.dp))
                 }
             }
@@ -548,7 +584,7 @@ private fun LibraryScreen(state: AppUiState, shown: List<LocalAsset>, model: App
 @Composable
 private fun VideoBadge() {
     Text("Video", color = Cream, style = MaterialTheme.typography.labelMedium,
-        modifier = Modifier.padding(6.dp).background(Ink.copy(alpha = .70f))
+        modifier = Modifier.padding(6.dp).clip(RoundedCornerShape(50.dp)).background(Ink.copy(alpha = .76f))
         .padding(horizontal = 6.dp, vertical = 2.dp))
 }
 
@@ -556,9 +592,7 @@ private fun VideoBadge() {
 private fun LocalThumbnail(asset: LocalAsset, modifier: Modifier) {
     val context = LocalContext.current
     val model = remember(asset.stableId) {
-        ImageRequest.Builder(context).data(asset.uri).apply {
-            if (asset.isVideo) decoderFactory { result, options, _ -> VideoFrameDecoder(result.source, options) }
-        }.build()
+        ImageRequest.Builder(context).data(asset.uri).crossfade(150).build()
     }
     AsyncImage(model = model, contentDescription = asset.name, contentScale = ContentScale.Crop, modifier = modifier)
 }
@@ -568,7 +602,7 @@ private fun RemoteImage(url: String, token: String, needsAuth: Boolean, name: St
                         modifier: Modifier, scale: ContentScale) {
     val context = LocalContext.current
     val model = remember(url, token, needsAuth) {
-        ImageRequest.Builder(context).data(url).apply {
+        ImageRequest.Builder(context).data(url).crossfade(140).apply {
             if (needsAuth) httpHeaders(NetworkHeaders.Builder().set("Authorization", "Bearer $token").build())
         }.build()
     }
@@ -629,7 +663,7 @@ private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modif
             Spacer(Modifier.height(8.dp))
             androidx.compose.material3.LinearProgressIndicator(
                 progress = { if (state.syncTotal > 0) state.syncDone.toFloat() / state.syncTotal else 0f },
-                modifier = Modifier.fillMaxWidth(), color = Coral)
+                modifier = Modifier.fillMaxWidth(), color = CobaltLight)
             Spacer(Modifier.height(8.dp))
             Text(if (state.selectedUploadActive) "${state.syncDone}% of this file transferred"
                 else "${state.syncDone} of ${state.syncTotal} uploaded in this run", color = Muted)
@@ -653,7 +687,7 @@ private fun BackupScreen(state: AppUiState, model: AppViewModel, modifier: Modif
         Text(state.account?.email.orEmpty(), color = Cream)
         Text(state.server?.url?.removePrefix("https://").orEmpty(), color = Muted)
         Spacer(Modifier.height(20.dp))
-        Text("Sign out", color = Coral, modifier = Modifier.clickable { model.signOut() }.padding(vertical = 12.dp))
+        Text("Sign out", color = Muted, modifier = Modifier.clickable { model.signOut() }.padding(vertical = 12.dp))
         Spacer(Modifier.height(18.dp))
     }
 }
@@ -775,11 +809,11 @@ private fun RemoteViewer(assets: List<ServerAsset>, deviceToken: String, initial
                 Text(if (current.safeToDelete) "Two verified server copies" else "Keep the local copy until backup completes",
                     color = if (current.safeToDelete) Mint else Muted, fontSize = 12.sp)
                 if (state.originalVerificationId == current.id && state.originalVerified.isNotBlank()) {
-                    Text(state.originalVerified, color = if (state.originalVerified.startsWith("Original matches")) Mint else Coral,
+                    Text(state.originalVerified, color = if (state.originalVerified.startsWith("Original matches")) Mint else ExceptionColor,
                         fontSize = 12.sp)
                 }
                 Text(if (state.verifyingOriginal && state.originalVerificationId == current.id) "Checking original…"
-                    else "Verify downloaded original", color = Coral, fontSize = 12.sp,
+                    else "Verify downloaded original", color = CobaltLight, fontSize = 12.sp,
                     modifier = Modifier.clickable(enabled = !state.verifyingOriginal) { model.verifyOriginal(current) }
                         .padding(vertical = 7.dp))
             }

@@ -36,7 +36,7 @@ import androidx.core.content.FileProvider
 import com.nc.fotoro.AppUiState
 import com.nc.fotoro.AppViewModel
 import com.nc.fotoro.data.ServerAsset
-import com.nc.fotoro.ui.theme.Coral
+import com.nc.fotoro.ui.theme.CobaltLight
 import com.nc.fotoro.ui.theme.Cream
 import com.nc.fotoro.ui.theme.Ink
 import com.nc.fotoro.ui.theme.Muted
@@ -64,7 +64,7 @@ internal fun DocumentPreview(asset: ServerAsset, state: AppUiState, model: AppVi
     Column(Modifier.fillMaxSize().background(Ink).padding(top = 80.dp, bottom = 76.dp),
         horizontalAlignment = Alignment.CenterHorizontally) {
         if (state.documentLoading || (file != null && asset.mimeType == "application/pdf" && bitmap == null && previewError == null)) {
-            CircularProgressIndicator(color = Coral)
+            CircularProgressIndicator(color = CobaltLight)
         } else if (file != null && asset.mimeType == "application/pdf" && bitmap != null) {
             Image(bitmap!!.asImageBitmap(), "Page ${page + 1} of $pageCount",
                 Modifier.weight(1f).fillMaxWidth(), contentScale = ContentScale.Fit)
