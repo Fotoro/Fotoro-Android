@@ -10,6 +10,7 @@ import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -138,15 +139,27 @@ class FotoroApi(private val store: SecureStore) {
     }
 
     suspend fun pair(): PairedServer {
-        // Create the short-lived session through Fotoro's authenticated relay.
-        // The phone can reach its Tailscale endpoint to redeem the returned token,
-        // but a cold/sleeping host may close a direct session-creation request.
-        val session = authorizedRequest("POST", "$website/api/pairing", JSONObject(), readTimeoutSeconds = 40)
-        val url = session.getString("server_url").trimEnd('/')
-        if (url !in linkedServerUrls()) {
-            throw ApiFailure(403, "The pairing session belongs to a different linked server")
+        // Decrypt the owner-linked route locally, then create the pairing session
+        // directly on the host. The website relay relies on a browser cookie and
+        // must not receive the recovery key or unlocked route from this app.
+        val routes = linkedServerUrls()
+        var lastFailure: Exception? = null
+        for (url in routes) {
+            try {
+                val session = authorizedRequest("POST", "$url/api/v1/pairing/sessions",
+                    JSONObject().put("server_url", url), readTimeoutSeconds = 40)
+                return redeemPairing(url, session.getString("pairing_token"))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: ApiFailure) {
+                if (error.status == 401 || error.status == 403) throw error
+                lastFailure = error
+            } catch (error: Exception) {
+                lastFailure = error
+            }
         }
-        return redeemPairing(url, session.getString("pairing_token"))
+        throw ApiFailure(503, lastFailure?.message
+            ?: "Could not reach the linked server. Confirm Tailscale is connected and the host is running.")
     }
 
     suspend fun pairFromQr(raw: String): PairedServer {
@@ -155,6 +168,12 @@ class FotoroApi(private val store: SecureStore) {
         val url = payload.optString("server_url").trimEnd('/')
         if (url !in linkedServerUrls()) throw ApiFailure(403, "This QR code is not for the server linked to your account")
         return redeemPairing(url, payload.optString("pairing_token"))
+    }
+
+    /** Validate and store this device's copy of the host recovery key using Android Keystore encryption. */
+    suspend fun unlockEndpoint(recoveryKey: String) {
+        linkedServerUrls(recoveryKey)
+        store.endpointRecoveryKey = recoveryKey.trim()
     }
 
     private suspend fun redeemPairing(serverUrl: String, pairingToken: String): PairedServer {
@@ -178,32 +197,30 @@ class FotoroApi(private val store: SecureStore) {
             .also { store.server = it }
     }
 
-    private suspend fun linkedServerUrls(): List<String> = withContext(Dispatchers.IO) {
+    private suspend fun linkedServerUrls(recoveryKey: String? = store.endpointRecoveryKey): List<String> = withContext(Dispatchers.IO) {
+        val key = recoveryKey?.trim()?.takeIf { it.isNotBlank() }
+            ?: throw ApiFailure(423, "Unlock the linked server with its recovery key first")
         val supabase = BuildConfig.FOTORO_SUPABASE_URL.trimEnd('/')
         val anonKey = BuildConfig.FOTORO_SUPABASE_ANON_KEY
         if (supabase.isBlank() || anonKey.isBlank()) throw ApiFailure(400, "Supabase configuration is missing")
         val token = validAccountToken()
-        val url = "$supabase/rest/v1/nodes?select=public_url,tailnet_url&order=last_seen.desc&limit=1"
+        val url = "$supabase/rest/v1/nodes?select=endpoint_ciphertext&order=last_seen.desc&limit=1"
         val call = Request.Builder().url(url).header("apikey", anonKey)
             .header("Authorization", "Bearer $token").build()
         client.newCall(call).execute().use { response ->
             if (!response.isSuccessful) throw ApiFailure(response.code,
-                if (response.code == 401) "Account session expired. Sign in again" else "Could not find your linked server (${response.code})")
+                if (response.code == 401) "Account session expired. Sign in again" else "Could not find your linked server (" + response.code + ")")
             val rows = JSONArray(response.body?.string().orEmpty())
             if (rows.length() == 0) throw ApiFailure(404, "No server is linked to this account. Run ./fotoro setup on your computer")
             val node = rows.getJSONObject(0)
-            val candidates = listOf(node.optString("public_url"), node.optString("tailnet_url"))
-                .map { it.trimEnd('/') }.filter { it.isNotBlank() }.distinct()
-            val valid = candidates.filter { candidate ->
-                runCatching { java.net.URI(candidate) }.getOrNull()?.let { parsed ->
-                    parsed.scheme == "https" && parsed.host?.endsWith(".ts.net") == true &&
-                        parsed.userInfo == null && parsed.port == -1 &&
-                        (parsed.path == null || parsed.path.isEmpty()) && parsed.query == null && parsed.fragment == null
-                } == true
+            if (node.isNull("endpoint_ciphertext") || node.optString("endpoint_ciphertext").isBlank()) {
+                throw ApiFailure(409, "This server has no encrypted route yet. Run ./fotoro nodesync on the Linux host.")
             }
-            if (valid.isEmpty())
-                throw ApiFailure(400, "Your server needs a valid Tailscale URL. Run ./fotoro nodesync")
-            valid
+            try {
+                NodeEndpointVault.decrypt(key, node.optString("endpoint_ciphertext")).preferred
+            } catch (error: IllegalArgumentException) {
+                throw ApiFailure(400, error.message ?: "Could not unlock the server endpoint")
+            }
         }
     }
 

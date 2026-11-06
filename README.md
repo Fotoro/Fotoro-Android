@@ -22,6 +22,8 @@ flowchart LR
 
 The app signs into the same Google and Supabase account as the website. It can use native Google sign-in or a browser handoff. The linked host is discovered from that account; a short-lived pairing invitation exchanges for a revocable device token. The token is stored with Android Keystore-backed encryption and used for device-scoped API requests. Tailscale supplies the route to the host, while the host checks the credential on protected routes.
 
+Before pairing a new phone, enter the same 43-character endpoint recovery key printed by `./fotoro endpoint-key` on the Linux host. The app reads only the authenticated `endpoint_ciphertext` row from Supabase and decrypts the host's AES-256-GCM envelope locally; the recovery key is never sent to Supabase and is stored encrypted with Android Keystore for later pairing. Enter it separately on each device you control. This is a high-entropy recovery key, not an account password or short PIN. Existing paired phones keep their locally protected route and scoped device token.
+
 Native Google sign-in requires an Android OAuth client for package `com.nc.fotoro` with the installed APK's signing certificate SHA-1, in the same Google Cloud project as the website's Web OAuth client. The [v0.1 release](https://github.com/Fotoro/Fotoro-Android/releases/tag/v0.1) lists its certificate fingerprint. Browser sign-in uses the website handoff and does not depend on the Android certificate. The Supabase URL and publishable key are app configuration; a service-role key must never be embedded in the app.
 
 ## Backup and browsing

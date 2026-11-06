@@ -67,6 +67,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.Role
@@ -116,7 +117,7 @@ fun FotoroApp(model: AppViewModel, onGoogleSignIn: () -> Unit, onBrowserSignIn: 
         when {
             state.booting -> Splash()
             state.account == null || state.reauthRequired -> AuthScreen(state, onGoogleSignIn, onBrowserSignIn)
-            state.server == null -> PairScreen(state, model::pair, onScanPairingQr)
+            state.server == null -> PairScreen(state, model, onScanPairingQr)
             else -> Home(state, model, onMediaPermission, onPickFiles)
         }
         state.error?.let { message ->
@@ -211,8 +212,9 @@ private fun AuthScreen(state: AppUiState, signIn: () -> Unit, browserSignIn: () 
 }
 
 @Composable
-private fun PairScreen(state: AppUiState, pair: () -> Unit, scanQr: () -> Unit) {
+private fun PairScreen(state: AppUiState, model: AppViewModel, scanQr: () -> Unit) {
     val context = LocalContext.current
+    var recoveryKey by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(26.dp)) {
         BrandHeader()
         Spacer(Modifier.height(72.dp))
@@ -223,15 +225,58 @@ private fun PairScreen(state: AppUiState, pair: () -> Unit, scanQr: () -> Unit) 
         Text("Your account is ready. Pair this phone to the server linked to ${state.account?.email.orEmpty()}.",
             color = Muted, style = MaterialTheme.typography.bodyLarge)
         Spacer(Modifier.height(34.dp))
-        StepCard("01", "Start Fotoro", "Run ./fotoroctl start on your computer.")
+        StepCard("01", "Start Fotoro", "Run ./fotoroctl start on your Linux computer.")
         Spacer(Modifier.height(10.dp))
-        StepCard("02", "Connect Tailscale", "Use the same tailnet on this phone and your computer.")
+        StepCard("02", "Unlock its private route", "On the host, run ./fotoro endpoint-key. Enter that recovery key here; it is encrypted on this phone with Android Keystore.")
         Spacer(Modifier.height(10.dp))
-        StepCard("03", "Pair securely", "We create a short-lived pairing code and exchange it for this phone's own key.")
-        Spacer(Modifier.height(28.dp))
-        PrimaryButton("Pair this phone", pair, state.busy)
-        Spacer(Modifier.height(12.dp))
-        SecondaryButton("Scan QR from Devices", scanQr, state.busy)
+        StepCard("03", "Connect Tailscale", "Use the same tailnet on this phone and your computer. The route key is separate from your Fotoro account password.")
+        Spacer(Modifier.height(24.dp))
+        if (state.endpointUnlocked) {
+            Label("Server route unlocked on this phone", Mint)
+            Spacer(Modifier.height(6.dp))
+            Text("The recovery key is protected in this app's Keystore-backed storage. Enter it separately on each device you control.",
+                color = Muted, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(12.dp))
+            SecondaryButton("Replace recovery key", {
+                model.forgetEndpointKey()
+                recoveryKey = ""
+            })
+            Spacer(Modifier.height(10.dp))
+            PrimaryButton("Pair this phone", model::pair, state.busy)
+            Spacer(Modifier.height(10.dp))
+            SecondaryButton("Scan QR from Devices", scanQr, state.busy)
+        } else {
+            OutlinedTextField(
+                value = recoveryKey,
+                onValueChange = { recoveryKey = it.trim() },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Host endpoint recovery key") },
+                placeholder = { Text("43 characters from ./fotoro endpoint-key") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                enabled = !state.busy,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Cream,
+                    unfocusedTextColor = Cream,
+                    focusedBorderColor = CobaltLight,
+                    unfocusedBorderColor = Line,
+                    focusedLabelColor = CobaltLight,
+                    unfocusedLabelColor = Muted,
+                    cursorColor = CobaltLight,
+                ),
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = { model.unlockEndpoint(recoveryKey) },
+                enabled = !state.busy && recoveryKey.length == 43,
+                modifier = Modifier.fillMaxWidth().height(54.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Cobalt, contentColor = Cream),
+                shape = RoundedCornerShape(50.dp),
+            ) {
+                if (state.busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Ink)
+                else Text("Unlock server route", fontWeight = FontWeight.Medium, fontSize = 15.sp)
+            }
+        }
         Spacer(Modifier.height(12.dp))
         Text("Get Tailscale for Android", color = CobaltLight, modifier = Modifier.clickable {
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://tailscale.com/download/android")))

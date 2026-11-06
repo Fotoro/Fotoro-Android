@@ -50,6 +50,7 @@ data class AppUiState(
     val reauthRequired: Boolean = false,
     val browserSignInPending: Boolean = false,
     val server: PairedServer? = null,
+    val endpointUnlocked: Boolean = false,
     val serverOnline: Boolean = false,
     val mediaGranted: Boolean = false,
     val autoSync: Boolean = true,
@@ -130,6 +131,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val auto = prefs.getBoolean("auto", true)
         val wifi = prefs.getBoolean("wifi_only", true)
         _state.update { it.copy(account = store.account, server = store.server,
+            endpointUnlocked = !store.endpointRecoveryKey.isNullOrBlank(),
             mediaGranted = catalog.hasAccess(), autoSync = auto, wifiOnly = wifi,
             transfersPaused = SyncScheduler.isPaused(application), booting = false) }
         prefs.getString("dashboard_metrics", null)?.let { saved ->
@@ -161,8 +163,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             .onSuccess { account ->
                 browserPollingJob?.cancel()
                 store.pendingBrowserSignIn = null
-                if (store.server != null && state.value.account?.userId != account.userId) store.server = null
+                if (state.value.account?.userId != account.userId) {
+                    store.server = null
+                    store.endpointRecoveryKey = null
+                }
                 _state.update { it.copy(account = account, server = store.server, busy = false,
+                    endpointUnlocked = !store.endpointRecoveryKey.isNullOrBlank(),
                     reauthRequired = false, browserSignInPending = false) }
                 if (store.server != null) { checkServer(); loadRemote(); refreshDashboard() }
             }
@@ -195,8 +201,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val result = runCatching { api.pollBrowserSignIn(pending.state) }
                 val account = result.getOrNull()
                 if (account != null) {
-                    if (state.value.account != null && state.value.account?.userId != account.userId) store.server = null
+                    if (state.value.account != null && state.value.account?.userId != account.userId) {
+                        store.server = null
+                        store.endpointRecoveryKey = null
+                    }
                     _state.update { it.copy(account = account, server = store.server,
+                        endpointUnlocked = !store.endpointRecoveryKey.isNullOrBlank(),
                         reauthRequired = false, browserSignInPending = false, error = null) }
                     if (store.server != null) { checkServer(); loadRemote(); refreshDashboard() }
                     return@launch
@@ -222,6 +232,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (state.value.mediaGranted && state.value.autoSync) SyncScheduler.syncNow(getApplication(), state.value.wifiOnly)
             }
             .onFailure { error -> _state.update { it.copy(busy = false) }; reportAccountFailure(error, "Pairing failed") }
+    }
+
+    fun unlockEndpoint(recoveryKey: String) = viewModelScope.launch {
+        _state.update { it.copy(busy = true, error = null) }
+        runCatching { api.unlockEndpoint(recoveryKey) }
+            .onSuccess {
+                _state.update { it.copy(endpointUnlocked = true, busy = false, error = null) }
+            }
+            .onFailure { error ->
+                _state.update { it.copy(endpointUnlocked = false, busy = false,
+                    error = error.message ?: "Could not unlock the server route") }
+            }
+    }
+
+    fun forgetEndpointKey() {
+        store.endpointRecoveryKey = null
+        _state.update { it.copy(endpointUnlocked = false) }
     }
 
     fun pairFromQr(payload: String) = viewModelScope.launch {

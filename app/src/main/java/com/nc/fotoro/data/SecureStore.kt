@@ -75,6 +75,11 @@ class SecureStore(context: Context) {
             JSONObject().put("url", it.url).put("id", it.deviceId).put("token", it.deviceToken)
         })
 
+    var endpointRecoveryKey: String?
+        get() = get("endpoint_recovery_key")?.optString("value")?.takeIf { it.isNotBlank() }
+        set(value) = put("endpoint_recovery_key",
+            value?.takeIf { it.isNotBlank() }?.let { JSONObject().put("value", it.trim()) })
+
     var pendingBrowserSignIn: PendingBrowserSignIn?
         get() = get("browser_signin")?.let {
             PendingBrowserSignIn(it.getString("state"), it.getLong("expires"))
